@@ -15,23 +15,28 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
-use eat_pass_core::spend::{InMemorySpentStore, SpendError, SpentStore};
+use eat_pass_core::spend::{SpendError, SpentStore};
 
+use crate::store::SpendBackend;
 use crate::wire::{ErrorBody, RedeemBody};
 
 struct RedeemState {
-    spent: InMemorySpentStore,
+    spent: SpendBackend,
 }
 
-pub async fn run(listen: SocketAddr) -> anyhow::Result<()> {
-    let state = Arc::new(RedeemState {
-        spent: InMemorySpentStore::new(),
-    });
+/// Run the central redeemer. `backend` selects shared-state storage: `None` →
+/// in-memory (single authority), or a `redis://` URL for durable, multi-replica
+/// shared spend state (requires the `redis` feature). `ttl_secs` bounds how long
+/// a retired key epoch's spent set lingers in the backend.
+pub async fn run(listen: SocketAddr, backend: Option<String>, ttl_secs: u64) -> anyhow::Result<()> {
+    let spent = SpendBackend::from_url(backend.as_deref(), ttl_secs)?;
+    let label = spent.label();
+    let state = Arc::new(RedeemState { spent });
     let app = Router::new()
         .route("/redeem", post(redeem))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind(listen).await?;
-    eprintln!("eat-pass redeemer: listening on http://{listen}  (POST /redeem) — central double-spend authority");
+    eprintln!("eat-pass redeemer: listening on http://{listen}  (POST /redeem) — central double-spend authority [{label} backend]");
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -57,6 +62,13 @@ async fn redeem(
             StatusCode::CONFLICT,
             Json(ErrorBody {
                 error: "token already spent (double-spend)".into(),
+            }),
+        )),
+        // Fail-closed: a backend outage is a 503, never a silent accept.
+        Err(SpendError::Backend(e)) => Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorBody {
+                error: format!("spend backend unavailable: {e}"),
             }),
         )),
     }

@@ -20,11 +20,11 @@ use eat_pass_core::gate::{
     issue_gated_with_limit, AttestationVerifier, ClassGated, DevVerifier, GateError, Measurement,
     MeasurementClass,
 };
-use eat_pass_core::ratelimit::InMemoryRateLimiter;
 use eat_pass_core::transparency::{KeyLog, KeyRecord, LogSigner, SignedHead};
 use eat_pass_core::{Issuer, IssuerPublicKey, SignResponse};
 use eat_pass_gate::{AzureTlsVerifier, AzureUqVerifier, UqVerifier};
 
+use crate::store::LimitBackend;
 use crate::wire::{ErrorBody, KtResponse, SignBody};
 
 /// Which attestation backend gates issuance.
@@ -53,7 +53,7 @@ impl AttestationVerifier for Gate {
 struct IssuerState {
     issuer: Issuer,
     verifier: Gate,
-    limiter: InMemoryRateLimiter,
+    limiter: LimitBackend,
     /// Published key-transparency view: the log records, the ed25519-signed
     /// head, and the log public key clients pin.
     kt_records: Vec<KeyRecord>,
@@ -83,6 +83,7 @@ pub async fn run(
     modulus_bits: usize,
     max_per_epoch: u32,
     epoch_secs: u64,
+    rate_backend: Option<String>,
 ) -> anyhow::Result<()> {
     eprintln!("eat-pass issuer: generating {modulus_bits}-bit issuance key (key_version 1)…");
     let issuer = Issuer::generate(1, modulus_bits)?;
@@ -113,7 +114,11 @@ pub async fn run(
             Gate::AzureTls(ClassGated::new(AzureTlsVerifier::new(), class))
         }
     };
-    let limiter = InMemoryRateLimiter::new(max_per_epoch, epoch_secs);
+    // Rate-limit state is in-memory by default; a `redis://` URL makes it shared
+    // across issuer replicas so the per-attestation quota is global, not
+    // per-process (m3).
+    let limiter = LimitBackend::from_url(rate_backend.as_deref(), max_per_epoch, epoch_secs)?;
+    let rate_label = limiter.label();
 
     // Key transparency (E.4): publish this key in an append-only, signed log so
     // clients can pin the *log* key and refuse any issuer key not committed here.
@@ -146,7 +151,7 @@ pub async fn run(
         "  measurement    class={class_name}@v{class_version} accepted={}",
         allow.len()
     );
-    eprintln!("  rate limit     {max_per_epoch}/epoch ({epoch_secs}s) per attested build");
+    eprintln!("  rate limit     {max_per_epoch}/epoch ({epoch_secs}s) per attested build [{rate_label} backend]");
     eprintln!("  kt log pubkey  {}", hex::encode(kt_log_pub));
 
     let app = Router::new()

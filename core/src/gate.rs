@@ -330,7 +330,12 @@ pub fn issue_gated_with_limit<V: AttestationVerifier, R: RateLimiter>(
     let measurement = verifier.verify(eat, &binding)?;
     limiter
         .try_consume(&measurement.rate_limit_id(), req.blinded.len() as u32)
-        .map_err(|RateLimitError::Exceeded| GateError::QuotaExceeded)?;
+        .map_err(|e| match e {
+            RateLimitError::Exceeded => GateError::QuotaExceeded,
+            // Fail-closed: a backend outage denies issuance rather than letting
+            // an un-counted batch through.
+            RateLimitError::Backend(m) => GateError::Unknown(format!("rate-limit backend: {m}")),
+        })?;
     issuer
         .blind_sign(req)
         .map_err(|e| GateError::Unknown(e.to_string()))

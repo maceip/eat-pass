@@ -93,6 +93,7 @@ pub fn run_in_process(modulus_bits: usize, count: usize) -> anyhow::Result<usize
         Err(SpendError::DoubleSpend) => {
             println!("origin   replay of the same token correctly rejected (double-spend)")
         }
+        Err(SpendError::Backend(e)) => anyhow::bail!("spend backend error: {e}"),
         Ok(()) => anyhow::bail!("double-spend was not detected"),
     }
 

@@ -21,6 +21,11 @@ use std::sync::Mutex;
 pub enum SpendError {
     #[error("token already spent (double-spend)")]
     DoubleSpend,
+    /// The backing store (e.g. a networked Redis/DB) failed. Callers must treat
+    /// this **fail-closed** — deny the redemption — since we cannot prove the
+    /// nonce is unspent.
+    #[error("spend backend unavailable: {0}")]
+    Backend(String),
 }
 
 /// Records spent token nonces, partitioned by key epoch.

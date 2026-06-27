@@ -288,7 +288,9 @@ mod tests {
 
         let verifier = PbVerifier::new(master);
         for t in &tokens {
-            let nonce = verifier.verify(t, &ch, &[policy.clone()]).unwrap();
+            let nonce = verifier
+                .verify(t, &ch, std::slice::from_ref(&policy))
+                .unwrap();
             assert_eq!(nonce, t.nonce);
         }
     }

@@ -24,6 +24,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub enum RateLimitError {
     #[error("issuance quota exceeded for this attestation in the current epoch")]
     Exceeded,
+    /// The backing store (e.g. a networked Redis/DB) failed. Callers must treat
+    /// this **fail-closed** — deny issuance — since we cannot prove the quota is
+    /// available.
+    #[error("rate-limit backend unavailable: {0}")]
+    Backend(String),
 }
 
 /// A rate limiter the gate consults before blind-signing a batch.

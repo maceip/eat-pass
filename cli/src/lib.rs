@@ -7,4 +7,5 @@ pub mod demo;
 pub mod issuer;
 pub mod origin;
 pub mod redeemer;
+pub mod store;
 pub mod wire;

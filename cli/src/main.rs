@@ -75,6 +75,11 @@ enum Cmd {
         /// Rate-limit epoch length in seconds.
         #[arg(long, default_value_t = 3600)]
         epoch_secs: u64,
+        /// Shared rate-limit backend URL (e.g. `redis://host:6379`) for a
+        /// multi-replica issuer. Unset = process-local in-memory. Requires the
+        /// `redis` build feature.
+        #[arg(long, value_name = "URL")]
+        rate_backend: Option<String>,
     },
 
     /// Client: mint tokens against a running issuer.
@@ -183,6 +188,14 @@ enum Cmd {
     Redeem {
         #[arg(long, default_value = "127.0.0.1:8100")]
         listen: SocketAddr,
+        /// Shared spend backend URL (e.g. `redis://host:6379`) for durable,
+        /// multi-replica double-spend state. Unset = in-memory. Requires the
+        /// `redis` build feature.
+        #[arg(long, value_name = "URL")]
+        backend: Option<String>,
+        /// TTL (seconds) for a retired key epoch's spent set in the backend.
+        #[arg(long, default_value_t = 86_400)]
+        ttl_secs: u64,
     },
 }
 
@@ -224,6 +237,7 @@ async fn main() -> anyhow::Result<()> {
             modulus_bits,
             max_per_epoch,
             epoch_secs,
+            rate_backend,
         } => {
             let backend = match gate.as_str() {
                 "dev" => {
@@ -256,6 +270,7 @@ async fn main() -> anyhow::Result<()> {
                 modulus_bits,
                 max_per_epoch,
                 epoch_secs,
+                rate_backend,
             )
             .await?;
         }
@@ -369,8 +384,12 @@ async fn main() -> anyhow::Result<()> {
             origin::run(listen, issuer, issuer_name, origin_info, redeemer).await?;
         }
 
-        Cmd::Redeem { listen } => {
-            redeemer::run(listen).await?;
+        Cmd::Redeem {
+            listen,
+            backend,
+            ttl_secs,
+        } => {
+            redeemer::run(listen, backend, ttl_secs).await?;
         }
     }
     Ok(())
