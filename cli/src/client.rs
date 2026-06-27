@@ -13,12 +13,77 @@ use eat_pass_core::{http, Client, IssuerPublicKey, SignResponse, TokenChallenge}
 
 use crate::wire::{KtResponse, SignBody};
 
+/// How the client produces the attestation evidence (the `eat` bytes) that
+/// commits to the request's channel binding.
+pub enum Attest {
+    /// Dev ed25519 statement over the channel binding (no hardware).
+    Dev {
+        seed: [u8; 32],
+        platform: String,
+        value_x: Vec<u8>,
+    },
+    /// Real Azure SEV-SNP vTPM bundle: shell out to `uq azure collect
+    /// --value-x <channel-binding>` so the AK quote binds the binding. `cmd` is
+    /// the collect invocation (argv joined by spaces), e.g.
+    /// `sudo /home/azureuser/unified-quote/target/release/uq azure collect`.
+    Azure { cmd: String },
+}
+
+/// Produce the `eat` bytes that bind `binding`, for the chosen attestation mode.
+fn collect_eat(attest: &Attest, binding: &[u8; 32]) -> anyhow::Result<Vec<u8>> {
+    match attest {
+        Attest::Dev {
+            seed,
+            platform,
+            value_x,
+        } => {
+            let attester = DevAttester::from_seed(*seed);
+            let measurement = Measurement::new(platform.clone(), value_x.clone());
+            Ok(attester.attest(&measurement, binding))
+        }
+        Attest::Azure { cmd } => {
+            // `uq azure collect --value-x <hex(binding)> -o <tmp>` — the AK quote
+            // commits hex(binding) as qualifyingData, which is exactly the
+            // channel-binding tie AzureUqVerifier enforces. Needs vTPM access
+            // (run with sudo on the CVM).
+            let out = tempfile_path("eatpass-azure-bundle", "json")?;
+            let mut argv = cmd.split_whitespace().collect::<Vec<_>>();
+            if argv.is_empty() {
+                anyhow::bail!("azure collect command is empty");
+            }
+            let prog = argv.remove(0);
+            let binding_hex = hex::encode(binding);
+            let status = std::process::Command::new(prog)
+                .args(&argv)
+                .args(["--value-x", &binding_hex, "-o", &out])
+                .status()
+                .map_err(|e| anyhow::anyhow!("spawn `{cmd}`: {e}"))?;
+            if !status.success() {
+                anyhow::bail!("`{cmd} --value-x {binding_hex}` exited with {status}");
+            }
+            let bytes = std::fs::read(&out)
+                .map_err(|e| anyhow::anyhow!("read collected bundle {out}: {e}"))?;
+            let _ = std::fs::remove_file(&out);
+            Ok(bytes)
+        }
+    }
+}
+
+/// A unique scratch path under the system temp dir (no external tempfile dep).
+fn tempfile_path(prefix: &str, ext: &str) -> anyhow::Result<String> {
+    let mut rnd = [0u8; 8];
+    getrandom::getrandom(&mut rnd).map_err(|e| anyhow::anyhow!("rng: {e}"))?;
+    let dir = std::env::temp_dir();
+    Ok(dir
+        .join(format!("{prefix}-{}.{ext}", hex::encode(rnd)))
+        .to_string_lossy()
+        .into_owned())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     issuer_url: String,
-    attester_seed: [u8; 32],
-    platform: String,
-    value_x: Vec<u8>,
+    attest: Attest,
     count: usize,
     issuer_name: String,
     origin_info: String,
@@ -76,11 +141,11 @@ pub async fn run(
     let (req, pending) =
         Client::begin(&pk, &challenge, count).map_err(|e| anyhow::anyhow!("begin: {e}"))?;
 
-    // 3. attest over the request's channel binding (dev attester stands in for
-    //    a TEE producing a unified-quote eat).
-    let attester = DevAttester::from_seed(attester_seed);
-    let measurement = Measurement::new(platform, value_x);
-    let eat = attester.attest(&measurement, &req.binding());
+    // 3. attest over the request's channel binding. The dev attester stands in
+    //    for a TEE; `Attest::Azure` collects a real SEV-SNP vTPM bundle whose AK
+    //    quote binds this exact channel binding as qualifyingData.
+    let binding = req.binding();
+    let eat = collect_eat(&attest, &binding)?;
 
     // 4. POST /sign — the issuer runs the gate, then blind-signs.
     let sign_url = format!("{}/sign", issuer_url.trim_end_matches('/'));

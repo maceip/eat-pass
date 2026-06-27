@@ -81,15 +81,29 @@ enum Cmd {
     Token {
         #[arg(long, default_value = "http://127.0.0.1:8088")]
         issuer: String,
-        /// Dev attester seed (64 hex chars) from `attester-key`.
+        /// Attestation mode: `dev` (ed25519 statement) or `azure` (real SEV-SNP
+        /// vTPM bundle via `uq azure collect`, for an in-CVM client).
+        #[arg(long, default_value = "dev")]
+        attest: String,
+        /// Dev attester seed (64 hex chars) from `attester-key`. Required for
+        /// `--attest dev`.
         #[arg(long)]
-        attester_seed: String,
-        /// Platform label for the attestation.
+        attester_seed: Option<String>,
+        /// Platform label for the dev attestation.
         #[arg(long, default_value = "dev")]
         platform: String,
-        /// The build measurement `value_x` (hex) — must be in the issuer's class.
-        #[arg(long)]
+        /// The build measurement `value_x` (hex) for `--attest dev` — must be in
+        /// the issuer's class. Ignored for `--attest azure` (the measurement
+        /// comes from hardware).
+        #[arg(long, default_value = "")]
         value_x: String,
+        /// `uq azure collect` invocation for `--attest azure` (argv, joined by
+        /// spaces). Needs vTPM access, so typically prefixed with `sudo`.
+        #[arg(
+            long,
+            default_value = "sudo /home/azureuser/unified-quote/target/release/uq azure collect"
+        )]
+        uq_collect: String,
         /// Number of tokens to mint in this batch.
         #[arg(long, default_value_t = 1)]
         count: usize,
@@ -117,6 +131,19 @@ enum Cmd {
         #[arg(long)]
         eat: String,
         /// Expected channel binding (64 hex chars) = the eat's eat_nonce.
+        #[arg(long)]
+        binding: String,
+    },
+
+    /// Verify a clean Azure SEV-SNP vTPM bundle (no attested-TLS; the in-CVM
+    /// client shape) through the real gate (`AzureUqVerifier`) and print the SNP
+    /// launch measurement. The bundle is a JSON file from `uq azure collect
+    /// --value-x <binding>`; binding is the 32-byte value_x the AK quote bound.
+    VerifyAzure {
+        /// Path to the JSON Azure bundle (from `uq azure collect`).
+        #[arg(long)]
+        bundle: PathBuf,
+        /// Expected bound value_x (64 hex chars) = the channel binding.
         #[arg(long)]
         binding: String,
     },
@@ -235,26 +262,38 @@ async fn main() -> anyhow::Result<()> {
 
         Cmd::Token {
             issuer,
+            attest,
             attester_seed,
             platform,
             value_x,
+            uq_collect,
             count,
             issuer_name,
             origin_info,
             present,
             kt_log_pub,
         } => {
-            let attester_seed = parse_hex32(&attester_seed, "attester-seed")?;
-            let value_x = hex::decode(value_x.trim())
-                .map_err(|e| anyhow::anyhow!("value-x: bad hex: {e}"))?;
+            let attest = match attest.as_str() {
+                "dev" => {
+                    let seed = attester_seed
+                        .ok_or_else(|| anyhow::anyhow!("--attest dev requires --attester-seed"))?;
+                    let value_x = hex::decode(value_x.trim())
+                        .map_err(|e| anyhow::anyhow!("value-x: bad hex: {e}"))?;
+                    client::Attest::Dev {
+                        seed: parse_hex32(&seed, "attester-seed")?,
+                        platform,
+                        value_x,
+                    }
+                }
+                "azure" => client::Attest::Azure { cmd: uq_collect },
+                other => anyhow::bail!("unknown --attest '{other}' (expected 'dev' or 'azure')"),
+            };
             let kt_log_pub = kt_log_pub
                 .map(|h| parse_hex32(&h, "kt-log-pub"))
                 .transpose()?;
             client::run(
                 issuer,
-                attester_seed,
-                platform,
-                value_x,
+                attest,
                 count,
                 issuer_name,
                 origin_info,
@@ -279,6 +318,25 @@ async fn main() -> anyhow::Result<()> {
                 Err(e) => {
                     anyhow::bail!("INVALID: {e}");
                 }
+            }
+        }
+
+        Cmd::VerifyAzure { bundle, binding } => {
+            use eat_pass_core::gate::AttestationVerifier;
+            let json = std::fs::read(&bundle)
+                .map_err(|e| anyhow::anyhow!("read bundle {}: {e}", bundle.display()))?;
+            let binding = parse_hex32(&binding, "binding")?;
+            match eat_pass_gate::AzureUqVerifier::new().verify(&json, &binding) {
+                Ok(m) => {
+                    println!("VALID");
+                    println!("platform     {}", m.platform);
+                    println!("measurement  {}", hex::encode(&m.value_x));
+                    println!(
+                        "value_x      {} (== AK-quoted qualifyingData)",
+                        hex::encode(binding)
+                    );
+                }
+                Err(e) => anyhow::bail!("INVALID: {e}"),
             }
         }
 
