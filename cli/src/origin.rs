@@ -22,6 +22,7 @@ use axum::{
 use eat_pass_core::transparency::verify_log;
 use eat_pass_core::{http, IssuerPublicKey, TokenChallenge, Verifier};
 
+use crate::tls::{serve, TlsPaths};
 use crate::wire::{KtResponse, RedeemBody};
 
 /// A verifier for one issuer key version, plus the epoch its spends bucket into.
@@ -57,9 +58,16 @@ pub async fn run(
     origin_info: String,
     redeemer: String,
     kt_log_pub: [u8; 32],
+    tls: Option<TlsPaths>,
+    insecure_http: bool,
+    insecure_tls: bool,
 ) -> anyhow::Result<()> {
     let base = issuer_url.trim_end_matches('/').to_string();
-    let http = reqwest::Client::new();
+    let mut http_builder = reqwest::Client::builder();
+    if insecure_tls {
+        http_builder = http_builder.danger_accept_invalid_certs(true);
+    }
+    let http = http_builder.build()?;
 
     // Fetch the *current* issuer key — this is the one we advertise to new
     // clients via WWW-Authenticate. Older versions are resolved on demand.
@@ -113,10 +121,7 @@ pub async fn run(
         .route("/resource", get(resource))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind(listen).await?;
-    eprintln!("eat-pass origin: listening on http://{listen}  (GET /resource)");
-    axum::serve(listener, app).await?;
-    Ok(())
+    serve(app, listen, tls, insecure_http, "eat-pass origin").await
 }
 
 /// Return the [`KeyEntry`] for a token's `token_key_id`, resolving and caching

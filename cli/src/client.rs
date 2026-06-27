@@ -1,36 +1,23 @@
 //! `eat-pass token` — the client.
 //!
-//! Fetches the issuer key, blinds a batch of token inputs for a
-//! [`TokenChallenge`], attaches a (dev) attestation over the request's channel
-//! binding, calls `/sign`, finalizes the blind signatures into tokens, and
-//! prints each token as an RFC 9577 `Authorization: PrivateToken` value. With
-//! `--present` it immediately spends the first token against an origin.
+//! Fetches the issuer key, blinds token inputs, obtains an attester-signed
+//! authorization over the channel binding, calls `/sign`, finalizes tokens.
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use eat_pass_core::transparency::{verify_consistency, verify_inclusion, verify_log, SignedHead};
 use eat_pass_core::{http, Client, IssuerPublicKey, SignResponse, TokenChallenge};
 
-use crate::wire::{KtResponse, SignBody};
+use crate::wire::{AuthorizeBody, AuthorizeResponse, KtResponse, SignBody};
 
-/// How the client produces the attestation evidence (the `eat` bytes) that
-/// commits to the request's channel binding. The only path is a real hardware
-/// attestation — there is no dev/software stand-in in the shipped client.
+/// How the client produces attestation evidence bound to the channel binding.
 pub enum Attest {
-    /// Real Azure SEV-SNP vTPM bundle: shell out to `uq azure collect
-    /// --value-x <channel-binding>` so the AK quote binds the binding. `cmd` is
-    /// the collect invocation (argv joined by spaces), e.g.
-    /// `sudo /home/azureuser/unified-quote/target/release/uq azure collect`.
+    /// Real Azure SEV-SNP vTPM bundle via `uq azure collect --value-x <binding>`.
     Azure { cmd: String },
 }
 
-/// Produce the `eat` bytes that bind `binding`, for the chosen attestation mode.
 fn collect_eat(attest: &Attest, binding: &[u8; 32]) -> anyhow::Result<Vec<u8>> {
     match attest {
         Attest::Azure { cmd } => {
-            // `uq azure collect --value-x <hex(binding)> -o <tmp>` — the AK quote
-            // commits hex(binding) as qualifyingData, which is exactly the
-            // channel-binding tie AzureUqVerifier enforces. Needs vTPM access
-            // (run with sudo on the CVM).
             let out = tempfile_path("eatpass-azure-bundle", "json")?;
             let mut argv = cmd.split_whitespace().collect::<Vec<_>>();
             if argv.is_empty() {
@@ -54,7 +41,6 @@ fn collect_eat(attest: &Attest, binding: &[u8; 32]) -> anyhow::Result<Vec<u8>> {
     }
 }
 
-/// A unique scratch path under the system temp dir (no external tempfile dep).
 fn tempfile_path(prefix: &str, ext: &str) -> anyhow::Result<String> {
     let mut rnd = [0u8; 8];
     getrandom::getrandom(&mut rnd).map_err(|e| anyhow::anyhow!("rng: {e}"))?;
@@ -65,9 +51,20 @@ fn tempfile_path(prefix: &str, ext: &str) -> anyhow::Result<String> {
         .into_owned())
 }
 
+fn http_client(insecure_tls: bool) -> anyhow::Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder();
+    if insecure_tls {
+        builder = builder.danger_accept_invalid_certs(true);
+    }
+    builder
+        .build()
+        .map_err(|e| anyhow::anyhow!("http client: {e}"))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     issuer_url: String,
+    attester_url: String,
     attest: Attest,
     count: usize,
     issuer_name: String,
@@ -75,12 +72,13 @@ pub async fn run(
     present: Option<String>,
     kt_log_pub: [u8; 32],
     kt_known_head: Option<SignedHead>,
+    insecure_tls: bool,
 ) -> anyhow::Result<()> {
-    let http_client = reqwest::Client::new();
-    let base = issuer_url.trim_end_matches('/');
+    let http_client = http_client(insecure_tls)?;
+    let issuer_base = issuer_url.trim_end_matches('/');
+    let attester_base = attester_url.trim_end_matches('/');
 
-    // 1. fetch + pin the issuer key.
-    let keys_url = format!("{base}/keys");
+    let keys_url = format!("{issuer_base}/keys");
     let pk: IssuerPublicKey = http_client
         .get(&keys_url)
         .send()
@@ -95,13 +93,10 @@ pub async fn run(
         hex::encode(tkid)
     );
 
-    // 1b. key transparency (E.4): always refuse to use an issuer key that is
-    //     not committed in the issuer's published log, signed by the pinned key.
-    //     This is the defense against issuer key-equivocation and is mandatory.
     let log_pub = kt_log_pub;
     {
         let kt: KtResponse = http_client
-            .get(format!("{base}/kt"))
+            .get(format!("{issuer_base}/kt"))
             .send()
             .await?
             .error_for_status()?
@@ -123,10 +118,6 @@ pub async fn run(
             "kt          OK — issuer key included at seq {seq}, log head signed by pinned key"
         );
 
-        // Consistency across rotation (E.4): if the caller remembers an earlier
-        // signed head, require that the current log *extends* it (the old head
-        // must reappear mid-chain). This catches an issuer that rewrote history
-        // to hide a key it briefly served.
         if let Some(old) = &kt_known_head {
             verify_consistency(old, &kt.records).map_err(|e| {
                 anyhow::anyhow!("kt: new log is not consistent with the head you pinned: {e}")
@@ -137,27 +128,35 @@ pub async fn run(
             );
         }
 
-        // Emit the head we observed so a follow-up run (e.g. after a rotation)
-        // can pin it via --kt-known-head and prove consistency.
         eprintln!("kt-head     {}:{}", kt.signed_head.seq, kt.signed_head.head);
     }
 
-    // 2. blind `count` token inputs for this challenge.
     let challenge = TokenChallenge::new(issuer_name, origin_info);
     let (req, pending) =
         Client::begin(&pk, &challenge, count).map_err(|e| anyhow::anyhow!("begin: {e}"))?;
 
-    // 3. attest over the request's channel binding. The dev attester stands in
-    //    for a TEE; `Attest::Azure` collects a real SEV-SNP vTPM bundle whose AK
-    //    quote binds this exact channel binding as qualifyingData.
     let binding = req.binding();
     let eat = collect_eat(&attest, &binding)?;
 
-    // 4. POST /sign — the issuer runs the gate, then blind-signs.
-    let sign_url = format!("{}/sign", issuer_url.trim_end_matches('/'));
+    let auth_body = AuthorizeBody {
+        eat_b64: B64.encode(eat),
+        binding: hex::encode(binding),
+        max_batch: count as u32,
+    };
+    let auth_resp: AuthorizeResponse = http_client
+        .post(format!("{attester_base}/authorize"))
+        .json(&auth_body)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    eprintln!("attester    authorization OK (binding={})", hex::encode(binding));
+
+    let sign_url = format!("{issuer_base}/sign");
     let body = SignBody {
         req,
-        eat_b64: B64.encode(eat),
+        authorization_b64: auth_resp.authorization_b64,
     };
     let resp = http_client.post(&sign_url).json(&body).send().await?;
     if !resp.status().is_success() {
@@ -167,7 +166,6 @@ pub async fn run(
     }
     let sign_resp: SignResponse = resp.json().await?;
 
-    // 5. finalize into unlinkable tokens.
     let tokens = pending
         .finalize(&pk, &sign_resp)
         .map_err(|e| anyhow::anyhow!("finalize: {e}"))?;
@@ -176,7 +174,6 @@ pub async fn run(
         println!("{}", http::authorization(t));
     }
 
-    // 6. optionally spend the first token against an origin.
     if let Some(resource_url) = present {
         let first = tokens.first().ok_or_else(|| anyhow::anyhow!("no tokens"))?;
         let r = http_client

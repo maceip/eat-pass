@@ -1,29 +1,46 @@
-//! On-the-wire bodies for the issuer HTTP API. The token/challenge/key formats
-//! themselves live in `eat-pass-core` (RFC 9578/9577); this is only the
-//! request/response envelope for the `/sign` gate.
+//! On-the-wire bodies for eat-pass HTTP APIs.
 
+use eat_pass_core::authorize::IssuanceAuthorization;
 use eat_pass_core::transparency::{KeyRecord, SignedHead};
 use eat_pass_core::SignRequest;
 use serde::{Deserialize, Serialize};
 
-/// `POST /sign` body: the blind-signature request plus the attestation that
-/// authorizes it. `eat_b64` is standard-base64 of the raw eat bytes (a
-/// `DevEat` JSON today; a unified-quote EAT in m2).
+/// `POST /sign` body: blind-sign request plus attester-signed authorization.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SignBody {
     pub req: SignRequest,
-    pub eat_b64: String,
+    /// Standard-base64 JSON [`IssuanceAuthorization`].
+    pub authorization_b64: String,
 }
 
-/// Error body returned by the issuer when the gate rejects a request.
+/// `POST /authorize` body: raw attestation + channel binding to authorize.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AuthorizeBody {
+    pub eat_b64: String,
+    /// 32-byte channel binding (64 hex chars) = `SignRequest.binding`.
+    pub binding: String,
+    pub max_batch: u32,
+}
+
+/// `POST /authorize` response.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AuthorizeResponse {
+    pub authorization_b64: String,
+}
+
+/// `GET /pubkey` on the attester.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PubkeyResponse {
+    pub pubkey: String,
+}
+
+/// Error body returned when a gate rejects a request.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ErrorBody {
     pub error: String,
 }
 
-/// `GET /kt` body: the published key-transparency view. A client pins `log_pub`
-/// out of band, verifies `records` reproduce `signed_head`, and confirms the
-/// `/keys` token_key_id is included before trusting the issuer key.
+/// `GET /kt` body: the published key-transparency view.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct KtResponse {
     pub log_pub: String,
@@ -31,10 +48,7 @@ pub struct KtResponse {
     pub signed_head: SignedHead,
 }
 
-/// `POST /rotate` response: the newly-installed signing key and where it landed
-/// in the transparency log. After this, `GET /keys` serves `key_version` and the
-/// log head advances to `kt_seq` — a client that pinned the log key sees the new
-/// key as a *consistent append* to the chain.
+/// `POST /rotate` response.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RotateResponse {
     pub key_version: u32,
@@ -43,12 +57,12 @@ pub struct RotateResponse {
     pub head: String,
 }
 
-/// `POST /redeem` body: a central double-spend authority shared by origin
-/// replicas. `nonce` is hex of the token's 32-byte spend id; `key_epoch` is the
-/// issuer key version that scopes it. The redeemer returns 200 the first time a
-/// `(key_epoch, nonce)` is seen and 409 on any replay.
+/// `POST /redeem` body.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RedeemBody {
     pub key_epoch: u32,
     pub nonce: String,
 }
+
+/// Re-export for wire roundtrips in tests.
+pub type AuthorizationWire = IssuanceAuthorization;

@@ -23,6 +23,7 @@
 //! - **Deterministic** issuance (no per-message randomizer) matches the Privacy
 //!   Access Token (PAT) profile so any RFC-9578 origin can verify our tokens.
 
+pub mod authorize;
 pub mod gate;
 pub mod pbrsa;
 pub mod ratelimit;

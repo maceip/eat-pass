@@ -1,17 +1,11 @@
-//! `eat-pass issuer` — the issuance service.
+//! `eat-pass issuer` — blind-signing service (RSA key only).
 //!
-//! `GET /keys` publishes the current issuer public key (clients pin
-//! `token_key_id = SHA256(SPKI)` from it); `GET /keys/{version}` serves a
-//! historical key so an origin can verify a token minted under a now-rotated
-//! key. `POST /sign` runs the attestation gate
-//! ([`eat_pass_core::gate::issue_gated_with_limit`]) and blind-signs only if the
-//! request carries a valid eat for an accepted measurement class, commits to the
-//! request's channel binding, and is within the per-attestation epoch quota.
+//! Issuance is gated on a short-lived [`IssuanceAuthorization`] from a
+//! separate **attester** — this process never verifies raw EAT bytes.
 //!
-//! `GET /kt` publishes the append-only, ed25519-signed key-transparency log.
-//! `POST /rotate` (admin-gated) generates a new signing key, appends it to the
-//! log, re-signs the head, and makes it current — so clients that pinned the
-//! *log* key see the new key arrive as a consistent append (m3 key rotation).
+//! `GET /keys` publishes the issuer public key; `POST /sign` blind-signs only
+//! when the client presents a valid attester-signed authorization bound to the
+//! request's channel binding.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -24,38 +18,16 @@ use axum::{
     Json, Router,
 };
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
-use eat_pass_core::gate::{
-    issue_gated_with_limit, AttestationVerifier, ClassGated, GateError, Measurement,
-    MeasurementClass,
-};
+use eat_pass_core::authorize::{attester_pubkey_from_hex, issue_authorized_with_limit};
+use eat_pass_core::gate::GateError;
 use eat_pass_core::transparency::{KeyLog, LogSigner, SignedHead};
 use eat_pass_core::{Issuer, IssuerPublicKey, SignResponse};
-use eat_pass_gate::{AzureTlsVerifier, AzureUqVerifier, UqVerifier};
+use ed25519_dalek::VerifyingKey;
 use tokio::sync::RwLock;
 
 use crate::store::LimitBackend;
+use crate::tls::{serve, TlsPaths};
 use crate::wire::{ErrorBody, KtResponse, RotateResponse, SignBody};
-
-/// Which attestation backend gates issuance. Every variant verifies a genuine
-/// hardware attestation to an AMD/Intel root — there is no software/dev gate.
-pub enum Gate {
-    /// Real unified-quote CBOR EAT verification (`UqVerifier`), class-gated.
-    Uq(ClassGated<UqVerifier>),
-    /// Azure SEV-SNP vTPM bundle (`value_x` = channel binding), class-gated.
-    Azure(ClassGated<AzureUqVerifier>),
-    /// Azure attested-TLS leaf cert (the live node's shape), class-gated.
-    AzureTls(ClassGated<AzureTlsVerifier>),
-}
-
-impl AttestationVerifier for Gate {
-    fn verify(&self, eat: &[u8], expected_binding: &[u8; 32]) -> Result<Measurement, GateError> {
-        match self {
-            Gate::Uq(v) => v.verify(eat, expected_binding),
-            Gate::Azure(v) => v.verify(eat, expected_binding),
-            Gate::AzureTls(v) => v.verify(eat, expected_binding),
-        }
-    }
-}
 
 /// The mutable, rotation-aware part of the issuer: the current signing key, the
 /// history of published public keys (so origins can verify older tokens), and
@@ -69,71 +41,36 @@ struct Rotating {
 
 struct IssuerState {
     rot: RwLock<Rotating>,
-    verifier: Gate,
+    attester_pub: VerifyingKey,
     limiter: LimitBackend,
-    /// Long-lived log signing key; re-signs the head on every rotation.
     log_signer: LogSigner,
-    /// The log public key clients pin (stable across rotations).
     kt_log_pub: [u8; 32],
-    /// If set, `POST /rotate` requires header `x-admin-token` to match.
     admin_token: Option<String>,
-    /// Modulus size used when minting a fresh key on rotation.
     modulus_bits: usize,
-}
-
-/// Issuance gate backend selected on the command line.
-pub enum Backend {
-    /// `--gate uq`: verify a real unified-quote CBOR EAT.
-    Uq,
-    /// `--gate azure`: verify an Azure SEV-SNP vTPM bundle (value_x bound).
-    Azure,
-    /// `--gate azure-tls`: verify an Azure attested-TLS leaf cert (DER).
-    AzureTls,
 }
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     listen: SocketAddr,
-    backend: Backend,
-    allow: Vec<Vec<u8>>,
-    class_name: String,
-    class_version: u32,
+    attester_pub_hex: String,
     modulus_bits: usize,
     max_per_epoch: u32,
     epoch_secs: u64,
     rate_backend: Option<String>,
+    tls: Option<TlsPaths>,
+    insecure_http: bool,
 ) -> anyhow::Result<()> {
+    let attester_pub = attester_pubkey_from_hex(&attester_pub_hex)
+        .map_err(|e| anyhow::anyhow!("--attester-pub: {e}"))?;
+
     eprintln!("eat-pass issuer: generating {modulus_bits}-bit issuance key (key_version 1)…");
     let issuer = Issuer::generate(1, modulus_bits)?;
     let pk = issuer.public();
     let tkid = pk.token_key_id()?;
 
-    let class = MeasurementClass::new(class_name.clone(), class_version, allow.clone());
-    let verifier = match backend {
-        Backend::Uq => {
-            eprintln!("  gate           uq (unified-quote CBOR EAT verification)");
-            Gate::Uq(ClassGated::new(UqVerifier::new(), class))
-        }
-        Backend::Azure => {
-            eprintln!("  gate           azure (SEV-SNP vTPM bundle → AMD root)");
-            Gate::Azure(ClassGated::new(AzureUqVerifier::new(), class))
-        }
-        Backend::AzureTls => {
-            eprintln!("  gate           azure-tls (attested-TLS leaf cert → AMD root)");
-            Gate::AzureTls(ClassGated::new(AzureTlsVerifier::new(), class))
-        }
-    };
-
-    // Rate-limit state is in-memory by default; a `redis://` URL makes it shared
-    // across issuer replicas so the per-attestation quota is global, not
-    // per-process (m3).
     let limiter = LimitBackend::from_url(rate_backend.as_deref(), max_per_epoch, epoch_secs)?;
     let rate_label = limiter.label();
 
-    // Key transparency (E.4): publish this key in an append-only, signed log so
-    // clients can pin the *log* key and refuse any issuer key not committed here.
-    // The log seed is deterministic-from-env or random per process; in prod the
-    // operator persists it so the log spans process restarts and rotations.
     let log_seed = kt_seed_from_env()?;
     let log_signer = LogSigner::from_seed(log_seed);
     let mut key_log = KeyLog::new();
@@ -158,7 +95,7 @@ pub async fn run(
             log: key_log,
             signed_head: kt_signed_head,
         }),
-        verifier,
+        attester_pub,
         limiter,
         log_signer,
         kt_log_pub,
@@ -168,8 +105,8 @@ pub async fn run(
 
     eprintln!("  token_key_id   {}", hex::encode(tkid));
     eprintln!(
-        "  measurement    class={class_name}@v{class_version} accepted={}",
-        allow.len()
+        "  attester pub   {} (authorization signatures)",
+        attester_pub_hex.trim()
     );
     eprintln!("  rate limit     {max_per_epoch}/epoch ({epoch_secs}s) per attested build [{rate_label} backend]");
     eprintln!("  kt log pubkey  {}", hex::encode(kt_log_pub));
@@ -190,12 +127,7 @@ pub async fn run(
         .route("/rotate", post(rotate))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind(listen).await?;
-    eprintln!(
-        "eat-pass issuer: listening on http://{listen}  (GET /keys, /keys/:v, /kt, POST /sign, /rotate)"
-    );
-    axum::serve(listener, app).await?;
-    Ok(())
+    serve(app, listen, tls, insecure_http, "eat-pass issuer").await
 }
 
 fn unix_now() -> u64 {
@@ -205,10 +137,6 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
-/// Key-log signing seed: 64 hex chars in `EATPASS_KT_SEED`. **Required** — the
-/// log key must be stable across restarts and rotations because clients pin it,
-/// so there is no random fallback (a fresh key each boot would silently break
-/// the consistency guarantee clients rely on).
 fn kt_seed_from_env() -> anyhow::Result<[u8; 32]> {
     let h = std::env::var("EATPASS_KT_SEED").map_err(|_| {
         anyhow::anyhow!(
@@ -227,9 +155,6 @@ async fn keys(State(state): State<Arc<IssuerState>>) -> Json<IssuerPublicKey> {
     Json(g.current.public())
 }
 
-/// Serve a historical (or current) issuer public key by version, so an origin
-/// holding a token minted under a now-rotated key can fetch the key to verify
-/// it. 404 if the version was never published by this issuer.
 async fn keys_version(
     State(state): State<Arc<IssuerState>>,
     Path(version): Path<u32>,
@@ -256,19 +181,33 @@ async fn sign(
     State(state): State<Arc<IssuerState>>,
     Json(body): Json<SignBody>,
 ) -> Result<Json<SignResponse>, (StatusCode, Json<ErrorBody>)> {
-    let eat = B64.decode(body.eat_b64.as_bytes()).map_err(|e| {
+    let auth_bytes = B64.decode(body.authorization_b64.as_bytes()).map_err(|e| {
         err(
             StatusCode::BAD_REQUEST,
-            format!("eat_b64 is not valid base64: {e}"),
+            format!("authorization_b64 is not valid base64: {e}"),
         )
     })?;
+    let auth: eat_pass_core::authorize::IssuanceAuthorization =
+        serde_json::from_slice(&auth_bytes).map_err(|e| {
+            err(
+                StatusCode::BAD_REQUEST,
+                format!("authorization JSON: {e}"),
+            )
+        })?;
 
     let g = state.rot.read().await;
-    match issue_gated_with_limit(&g.current, &state.verifier, &body.req, &eat, &state.limiter) {
+    let now = unix_now();
+    match issue_authorized_with_limit(
+        &g.current,
+        &state.attester_pub,
+        &body.req,
+        &auth,
+        &state.limiter,
+        now,
+    ) {
         Ok(resp) => Ok(Json(resp)),
         Err(e) => {
-            use eat_pass_core::gate::GateError::*;
-            // Quota is a 429; everything else the client got wrong/forged is a 403.
+            use GateError::*;
             let code = match e {
                 QuotaExceeded => StatusCode::TOO_MANY_REQUESTS,
                 _ => StatusCode::FORBIDDEN,
@@ -278,11 +217,6 @@ async fn sign(
     }
 }
 
-/// Admin-gated key rotation: mint a fresh signing key, append it to the
-/// transparency log, re-sign the head, and make it current. Tokens already
-/// minted under the previous key keep verifying (origins fetch it via
-/// `/keys/{version}`); spend sets are epoched by key_version so they stay
-/// independent.
 async fn rotate(
     State(state): State<Arc<IssuerState>>,
     headers: HeaderMap,
@@ -297,8 +231,6 @@ async fn rotate(
         .get("x-admin-token")
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default();
-    // Constant-ish comparison is unnecessary here (the token is operator-held,
-    // not user-supplied), but reject empties explicitly.
     if presented.is_empty() || presented != expected {
         return Err(err(
             StatusCode::FORBIDDEN,
@@ -306,8 +238,6 @@ async fn rotate(
         ));
     }
 
-    // Determine the next version under a short read lock, then do the expensive
-    // keygen OUTSIDE any lock so concurrent /sign and /keys keep serving.
     let next_version = {
         let g = state.rot.read().await;
         g.current.public().key_version + 1
@@ -323,7 +253,6 @@ async fn rotate(
     })?;
     let now = unix_now();
 
-    // Commit under the write lock: append, re-sign, install as current.
     let (seq, head_hex) = {
         let mut g = state.rot.write().await;
         let seq = g
@@ -351,4 +280,11 @@ async fn rotate(
 
 fn err(code: StatusCode, msg: String) -> (StatusCode, Json<ErrorBody>) {
     (code, Json(ErrorBody { error: msg }))
+}
+
+/// Attestation backend for the attester (shared with attester CLI).
+pub enum Backend {
+    Uq,
+    Azure,
+    AzureTls,
 }

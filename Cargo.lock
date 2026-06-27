@@ -249,6 +249,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "axum-server"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c1ab4a3ec9ea8a657c72d99a03a824af695bd0fb5ec639ccbd9cd3543b41a5f9"
+dependencies = [
+ "arc-swap",
+ "bytes",
+ "fs-err 3.3.0",
+ "http",
+ "http-body",
+ "hyper",
+ "hyper-util",
+ "pin-project-lite",
+ "rustls",
+ "rustls-pemfile",
+ "rustls-pki-types",
+ "tokio",
+ "tokio-rustls",
+ "tower-service",
+]
+
+[[package]]
 name = "base16ct"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -826,11 +848,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "axum-server",
  "base64",
  "blind-rsa-signatures",
  "clap",
  "eat-pass-core",
  "eat-pass-gate",
+ "ed25519-dalek",
  "getrandom 0.2.17",
  "hex",
  "r2d2",
@@ -1009,6 +1033,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "88a41f105fe1d5b6b34b2055e3dc59bb79b46b48b2040b9e6c7b4b5de097aa41"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "fs-err"
+version = "3.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73fde052dbfc920003cfd2c8e2c6e6d4cc7c1091538c3a24226cec0665ab08c0"
+dependencies = [
+ "autocfg",
+ "tokio",
 ]
 
 [[package]]
@@ -3092,7 +3126,7 @@ dependencies = [
  "askama",
  "camino",
  "cargo_metadata",
- "fs-err",
+ "fs-err 2.11.0",
  "glob",
  "goblin",
  "heck",
@@ -3137,7 +3171,7 @@ checksum = "12c65a5b12ec544ef136693af8759fb9d11aefce740fb76916721e876639033b"
 dependencies = [
  "bincode",
  "camino",
- "fs-err",
+ "fs-err 2.11.0",
  "once_cell",
  "proc-macro2",
  "quote",
@@ -3168,7 +3202,7 @@ dependencies = [
  "anyhow",
  "camino",
  "cargo_metadata",
- "fs-err",
+ "fs-err 2.11.0",
  "once_cell",
 ]
 
@@ -3188,7 +3222,7 @@ dependencies = [
 [[package]]
 name = "unified-quote"
 version = "0.1.0"
-source = "git+https://github.com/maceip/unified-quote?branch=main#669dc09881208f65d3f14e6d03f211a9abd717c1"
+source = "git+https://github.com/maceip/unified-quote?tag=v0.1.4#456b45add4247f91ebfccca5c8efbe4b93688853"
 dependencies = [
  "anyhow",
  "base64",

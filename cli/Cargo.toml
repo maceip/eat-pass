@@ -31,6 +31,8 @@ base64 = { workspace = true }
 getrandom = { workspace = true }
 redis = { version = "0.27", default-features = false, optional = true }
 r2d2 = { version = "0.8", optional = true }
+axum-server = { workspace = true }
+ed25519-dalek = { workspace = true }
 
 [features]
 # Shipped by default: the production binary must be able to use the networked,

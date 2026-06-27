@@ -14,17 +14,11 @@
 //!   an accepted build, bound to this request?), and
 //! - the **issuer** holds the signing key and *mints* the blind signature.
 //!
-//! [`issue_gated`] runs both in one call, so a single process today holds the
-//! signing key **and** judges attestations — a deliberately documented
-//! collapse. The seam to split them is already present: the gate takes the
-//! `verifier: &V` ([`AttestationVerifier`]) and the `issuer` as separate
-//! objects. To run them as separate services, host the [`AttestationVerifier`]
-//! behind its own endpoint that returns a short-lived, signed *issuance
-//! authorization* (binding + accepted class), and have the issuer blind-sign
-//! only on presentation of that authorization. The [`MeasurementClass`] +
-//! channel-binding values are exactly what such an authorization would carry.
-//! Until that split is deployed, the assumption is: the issuer process is
-//! trusted to faithfully run the verifier.
+//! [`issue_gated`] runs both in one call for unit tests and legacy callers.
+//! Production deployments split the roles: an **attester** verifies EATs and
+//! returns a short-lived [`crate::authorize::IssuanceAuthorization`]; the
+//! **issuer** blind-signs only on a valid authorization (see
+//! [`crate::authorize::issue_authorized_with_limit`]).
 
 use std::collections::HashSet;
 
