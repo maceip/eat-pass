@@ -167,9 +167,16 @@ impl DevAttester {
     pub fn generate() -> Result<Self, GateError> {
         let mut seed = [0u8; 32];
         getrandom::getrandom(&mut seed).map_err(|e| GateError::Unknown(e.to_string()))?;
-        Ok(Self {
+        Ok(Self::from_seed(seed))
+    }
+
+    /// Reconstruct an attester from a 32-byte ed25519 seed. Lets a caller persist
+    /// the seed (e.g. a CLI flag/env) and recreate the same attester identity —
+    /// the dev stand-in for "the same TEE instance produced this eat".
+    pub fn from_seed(seed: [u8; 32]) -> Self {
+        Self {
             sk: SigningKey::from_bytes(&seed),
-        })
+        }
     }
 
     /// The public key a [`DevVerifier`] is configured to trust.

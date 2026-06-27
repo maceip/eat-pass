@@ -232,9 +232,13 @@ other four repos now use). the client is the interesting target:
     (`spend::InMemorySpentStore`, E.8).
   - **issuance batching** documented on `Client::begin` (E.9).
   - attester/issuer **trust-boundary** documented + seamed in `gate` (A.2).
-- **m1 — issuer + client + origin.** axum `/keys` + `/sign` (gated), client
-  `request`, origin middleware + example using the rfc 9577 headers, end-to-end
-  test with `DevVerifier`, cross-platform release of `eat-pass`. depends on m0.5.
+- **m1 — issuer + client + origin (done).** the `eat-pass` binary (`cli/`) is
+  all three roles: `issuer` serves axum `GET /keys` + gated `POST /sign`
+  (via `issue_gated_with_limit`), `token` is the client (fetch key → blind batch
+  → attest → `/sign` → finalize → present), and `origin` is an example resource
+  server that answers `401` + rfc 9577 `WWW-Authenticate: PrivateToken` and
+  spends a presented token once. `demo` runs all three in-process; covered by
+  `cli/tests/e2e.rs` and a cross-platform release workflow.
 - **m2 — real eat gate + key transparency.** `UqVerifier` against unified-quote
   (live azure sev-snp node); wire the **measurement class** to the unified-quote
   registry trust-root + the new signed snapshot (R.2); plan/stand up an

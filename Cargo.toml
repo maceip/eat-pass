@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core"]
+members = ["core", "cli"]
 
 [workspace.package]
 edition = "2021"
@@ -16,3 +16,8 @@ hex = "0.4"
 base64 = "0.22"
 thiserror = "2"
 getrandom = "0.2"
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+axum = "0.7"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

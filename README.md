@@ -48,12 +48,53 @@ gated on hardware attestation (an eat), not on an account.
 eat-pass consumes unified-quote's portable verifier to check the gate, and emits
 tokens any origin can verify with nothing but a public key.
 
+## use it
+
+the `eat-pass` binary is issuer, client, and origin in one. the whole flow runs
+in-process with no network:
+
+```bash
+cargo run -p eat-pass-cli --bin eat-pass -- demo
+```
+
+or wire the three roles over http:
+
+```bash
+# 1. a dev attester identity (stands in for a TEE producing a unified-quote eat)
+eat-pass attester-key
+#   seed          <hex>   → give to the client
+#   verifying-key <hex>   → give to the issuer
+
+# 2. issuer: publishes its key, gates /sign on an accepted measurement class
+eat-pass issuer --attester-key <vk> --allow <value_x_hex> --class accepted-builds
+
+# 3. origin: gates GET /resource on a valid PrivateToken (RFC 9577)
+eat-pass origin --issuer http://127.0.0.1:8088
+
+# 4. client: mint a batch, then spend one against the origin
+eat-pass token --attester-seed <seed> --value-x <value_x_hex> \
+  --count 2 --present http://127.0.0.1:8099/resource
+```
+
+an unauthenticated request gets `401` + `WWW-Authenticate: PrivateToken
+challenge=…, token-key=…`; a request carrying a finalized token gets `200`, and
+a replay of the same token is rejected as a double-spend.
+
 ## status
 
-design phase. the protocol, crypto choice, and crate layout are specified in
-[`PLAN.md`](PLAN.md), grounded in google's decompiled anonymous-tokens surface,
-chromium/android private-access-token sources, and the relevant ietf rfcs.
-implementation lands against the milestones in that doc.
+- **m0 / m0.5 — done.** the credential layer: blind-rsa issuance
+  (RSABSSA-SHA384-PSS-Deterministic), the RFC 9578 token + RFC 9577 http flow,
+  `TokenChallenge` origin binding, `token_key_id` pinning, measurement-class
+  anonymity sets, partially-blind policy metadata, rate-limiting, and an epoched
+  double-spend store. green on linux/macos/windows.
+- **m1 — done.** the `eat-pass` binary above (issuer service, client, origin
+  example) with an end-to-end test and a cross-platform release.
+- **m2+ — next.** the real `UqVerifier` gating on a live unified-quote eat, key
+  transparency, and shared-state hardening.
+
+the protocol, crypto choice, and crate layout are specified in [`PLAN.md`](PLAN.md),
+grounded in google's decompiled anonymous-tokens surface, chromium/android
+private-access-token sources, and the relevant ietf rfcs.
 
 ## license
 
