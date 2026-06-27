@@ -134,6 +134,41 @@ pub trait AttestationVerifier {
     fn verify(&self, eat: &[u8], expected_binding: &[u8; 32]) -> Result<Measurement, GateError>;
 }
 
+/// Wraps any [`AttestationVerifier`] to additionally enforce a
+/// [`MeasurementClass`] (the anonymity set, E.5).
+///
+/// Some verifiers *authenticate* an attestation but do not themselves decide
+/// which builds are acceptable — notably the real `unified-quote` verifier,
+/// which proves a quote is genuine and extracts its `value_x` but leaves the
+/// allowlist policy to the caller. `ClassGated` adds that policy: it runs the
+/// inner verifier, then rejects with [`GateError::MeasurementNotAllowed`] unless
+/// the extracted measurement is in `class`. (`DevVerifier` already gates on a
+/// class internally, so it does not need wrapping.)
+pub struct ClassGated<V> {
+    inner: V,
+    class: MeasurementClass,
+}
+
+impl<V> ClassGated<V> {
+    pub fn new(inner: V, class: MeasurementClass) -> Self {
+        Self { inner, class }
+    }
+
+    pub fn class(&self) -> &MeasurementClass {
+        &self.class
+    }
+}
+
+impl<V: AttestationVerifier> AttestationVerifier for ClassGated<V> {
+    fn verify(&self, eat: &[u8], expected_binding: &[u8; 32]) -> Result<Measurement, GateError> {
+        let m = self.inner.verify(eat, expected_binding)?;
+        if !self.class.contains(&m.value_x) {
+            return Err(GateError::MeasurementNotAllowed);
+        }
+        Ok(m)
+    }
+}
+
 fn dev_signed_bytes(m: &Measurement, binding: &[u8; 32]) -> Vec<u8> {
     let mut v = Vec::with_capacity(DEV_EAT_DOMAIN.len() + m.platform.len() + m.value_x.len() + 34);
     v.extend_from_slice(DEV_EAT_DOMAIN);
@@ -325,4 +360,42 @@ pub fn issue_gated_pbrsa<V: AttestationVerifier>(
     pb_issuer
         .blind_sign(blinded, &policy)
         .map_err(|e| GateError::Unknown(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A verifier that authenticates nothing — it just returns a fixed
+    /// measurement. Stands in for an authenticating-but-not-allowlisting
+    /// verifier (like the real unified-quote one) so we can test `ClassGated`.
+    struct FixedMeasurement(Measurement);
+    impl AttestationVerifier for FixedMeasurement {
+        fn verify(&self, _eat: &[u8], _binding: &[u8; 32]) -> Result<Measurement, GateError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    #[test]
+    fn class_gated_allows_in_class_rejects_out_of_class() {
+        let in_class = vec![1u8; 32];
+        let out_class = vec![9u8; 32];
+        let class = MeasurementClass::new("accepted", 2, [in_class.clone()]);
+
+        let ok = ClassGated::new(
+            FixedMeasurement(Measurement::new("sev-snp", in_class.clone())),
+            class.clone(),
+        );
+        assert!(ok.verify(b"", &[0u8; 32]).is_ok());
+        assert_eq!(ok.class().policy_label(), "accepted@v2");
+
+        let bad = ClassGated::new(
+            FixedMeasurement(Measurement::new("sev-snp", out_class)),
+            class,
+        );
+        assert_eq!(
+            bad.verify(b"", &[0u8; 32]),
+            Err(GateError::MeasurementNotAllowed)
+        );
+    }
 }

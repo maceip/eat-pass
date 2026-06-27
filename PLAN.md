@@ -239,16 +239,28 @@ other four repos now use). the client is the interesting target:
   server that answers `401` + rfc 9577 `WWW-Authenticate: PrivateToken` and
   spends a presented token once. `demo` runs all three in-process; covered by
   `cli/tests/e2e.rs` and a cross-platform release workflow.
-- **m2 — real eat gate + key transparency.** `UqVerifier` against unified-quote
-  (live azure sev-snp node); wire the **measurement class** to the unified-quote
-  registry trust-root + the new signed snapshot (R.2); plan/stand up an
-  **append-only key-transparency log** so pinned `token_key_id`s are globally
-  consistent (the second half of E.4). depends on R.1 (registry sig verification,
-  done) and the snapshot (R.2, done).
-- **m3 — operational hardening.** persist the spend store + rate limiter behind a
-  shared backend (multi-replica issuer); origin-local vs central `/redeem` (E.8);
-  tune issuance batch size against the rate-limit policy (E.9); fuzz the token +
-  challenge parsers; key rotation/versioning end-to-end.
+- **m2 — real eat gate + key transparency (done).** the [`eat-pass-gate`](gate/)
+  crate implements the real `AttestationVerifier` against unified-quote:
+  `UqVerifier` (cbor eat: requires `eat_nonce == channel binding`, then
+  `verify_platform_quote` to the AMD/Intel root), and the azure sev-snp vtpm path
+  — `AzureUqVerifier` (value_x-bound bundle) and `AzureTlsVerifier` (attested-TLS
+  leaf cert). `ClassGated` enforces the **measurement class** for verifiers that
+  authenticate but don't allowlist. the issuer selects the backend with
+  `--gate dev|uq|azure|azure-tls`. **verified end-to-end against the live
+  `attest.secure.build` sev-snp node** (`eat-pass verify-azure-tls` → AMD Milan
+  root, launch measurement extracted, channel-binding tie enforced). **key
+  transparency** (second half of E.4): `transparency` module — an append-only,
+  ed25519-signed, hash-chained key log with `verify_log` / `verify_inclusion` /
+  `verify_consistency`; the issuer publishes it at `/kt` and the client pins it
+  with `--kt-log-pub`. (gcp/tdx node still blocked; the tdx verifier is compiled
+  and ready behind the same path.)
+- **m3 — operational hardening.** the trait seam is in place: `spend::SpentStore`
+  and `ratelimit::RateLimiter` are atomic `&self` interfaces, and a **central
+  redeemer** (`eat-pass redeem` + `origin --redeemer`) already shares
+  double-spend across origin replicas (E.8). remaining: persist both behind a
+  networked backend (redis/db) implementing those traits for a multi-replica
+  issuer; tune issuance batch size against the rate-limit policy (E.9); fuzz the
+  token + challenge parsers; key rotation/versioning end-to-end.
 - **m4 — mobile + pages.** uniffi android/ios client; github pages site (family
   style + canon scroll).
 

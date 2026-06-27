@@ -17,6 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 eat-pass-core = { path = "../core" }
+eat-pass-gate = { path = "../gate" }
 blind-rsa-signatures = "0.17"
 anyhow = { workspace = true }
 clap = { workspace = true }

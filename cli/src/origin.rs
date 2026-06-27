@@ -17,8 +17,10 @@ use axum::{
     routing::get,
     Router,
 };
-use eat_pass_core::spend::{InMemorySpentStore, SpendError, SpentStore};
+use eat_pass_core::spend::{InMemorySpentStore, SpentStore};
 use eat_pass_core::{http, IssuerPublicKey, TokenChallenge, Verifier};
+
+use crate::wire::RedeemBody;
 
 struct OriginState {
     verifier: Verifier,
@@ -26,6 +28,10 @@ struct OriginState {
     key_epoch: u32,
     spent: InMemorySpentStore,
     www_authenticate: String,
+    /// When set, double-spend is enforced centrally (shared across replicas)
+    /// via `POST {redeemer}/redeem`; otherwise it is origin-local.
+    redeemer: Option<String>,
+    http: reqwest::Client,
 }
 
 pub async fn run(
@@ -33,6 +39,7 @@ pub async fn run(
     issuer_url: String,
     issuer_name: String,
     origin_info: String,
+    redeemer: Option<String>,
 ) -> anyhow::Result<()> {
     // Fetch + pin the issuer key this origin will accept tokens from.
     let keys_url = format!("{}/keys", issuer_url.trim_end_matches('/'));
@@ -56,12 +63,18 @@ pub async fn run(
         key_epoch,
         spent: InMemorySpentStore::new(),
         www_authenticate,
+        redeemer: redeemer.map(|r| r.trim_end_matches('/').to_string()),
+        http: reqwest::Client::new(),
     });
 
     eprintln!(
         "eat-pass origin: pinned issuer key v{key_epoch} token_key_id={}",
         hex::encode(tkid)
     );
+    match &state.redeemer {
+        Some(r) => eprintln!("eat-pass origin: double-spend via central redeemer {r}/redeem"),
+        None => eprintln!("eat-pass origin: double-spend tracked origin-locally"),
+    }
 
     let app = Router::new()
         .route("/resource", get(resource))
@@ -90,17 +103,42 @@ async fn resource(State(state): State<Arc<OriginState>>, headers: HeaderMap) -> 
         }
     };
 
-    match state.spent.check_and_mark(state.key_epoch, &nonce) {
-        Ok(()) => (
+    let spent_ok = match &state.redeemer {
+        Some(url) => spend_centrally(&state.http, url, state.key_epoch, &nonce).await,
+        None => state.spent.check_and_mark(state.key_epoch, &nonce).is_ok(),
+    };
+    if spent_ok {
+        (
             StatusCode::OK,
             "access granted: valid attested, unlinkable, one-time token\n".to_string(),
         )
-            .into_response(),
-        Err(SpendError::DoubleSpend) => (
+            .into_response()
+    } else {
+        (
             StatusCode::CONFLICT,
             "token already spent (double-spend)\n".to_string(),
         )
-            .into_response(),
+            .into_response()
+    }
+}
+
+/// Forward the spend to the central redeemer. Returns `true` if this is the
+/// first time the nonce was seen (HTTP 200), `false` on a double-spend (409) or
+/// any redeemer error (fail-closed — we do not grant access we can't account
+/// for).
+async fn spend_centrally(
+    http: &reqwest::Client,
+    url: &str,
+    key_epoch: u32,
+    nonce: &[u8; 32],
+) -> bool {
+    let body = RedeemBody {
+        key_epoch,
+        nonce: hex::encode(nonce),
+    };
+    match http.post(format!("{url}/redeem")).json(&body).send().await {
+        Ok(r) => r.status() == StatusCode::OK,
+        Err(_) => false,
     }
 }
 

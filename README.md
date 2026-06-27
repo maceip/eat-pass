@@ -80,6 +80,25 @@ an unauthenticated request gets `401` + `WWW-Authenticate: PrivateToken
 challenge=…, token-key=…`; a request carrying a finalized token gets `200`, and
 a replay of the same token is rejected as a double-spend.
 
+### real attestation (m2)
+
+gate issuance on a genuine hardware quote instead of the dev attester, verify a
+live azure sev-snp node, pin the key log, and share double-spend across replicas:
+
+```bash
+# verify the live azure attested-TLS node to the AMD root, through the gate
+eat-pass verify-azure-tls --cert live-leaf.der --binding <value_x_hex>
+
+# issuer gating on a real attestation backend (cbor eat | azure bundle | azure-tls)
+eat-pass issuer --gate uq        --allow <measurement_hex> --class accepted-builds
+#   prints "kt log pubkey <hex>" → clients pin it:
+eat-pass token  --kt-log-pub <hex> --attester-seed <seed> --value-x <hex>
+
+# shared double-spend for horizontally-scaled origins
+eat-pass redeem --listen 127.0.0.1:8100
+eat-pass origin --redeemer http://127.0.0.1:8100   # every replica points here
+```
+
 ## status
 
 - **m0 / m0.5 — done.** the credential layer: blind-rsa issuance
@@ -89,8 +108,20 @@ a replay of the same token is rejected as a double-spend.
   double-spend store. green on linux/macos/windows.
 - **m1 — done.** the `eat-pass` binary above (issuer service, client, origin
   example) with an end-to-end test and a cross-platform release.
-- **m2+ — next.** the real `UqVerifier` gating on a live unified-quote eat, key
-  transparency, and shared-state hardening.
+- **m2 — done.** the real attestation gate. [`eat-pass-gate`](gate/) verifies a
+  genuine [unified-quote](https://github.com/maceip/unified-quote) attestation
+  (`UqVerifier` for the cbor eat; `AzureUqVerifier` / `AzureTlsVerifier` for the
+  azure sev-snp vtpm path) to the **AMD/Intel hardware root** and extracts the
+  gated measurement; the issuer selects it with `--gate dev|uq|azure|azure-tls`.
+  verified end-to-end against the live `attest.secure.build` sev-snp node
+  (`eat-pass verify-azure-tls`). plus **key transparency** — the issuer publishes
+  a signed, append-only key log at `/kt` and the client pins it with
+  `--kt-log-pub` (inclusion + consistency checks), and a **central redeemer**
+  (`eat-pass redeem` + `origin --redeemer`) for shared cross-replica
+  double-spend. (gcp/tdx node still blocked; the tdx verifier path is compiled
+  and ready.)
+- **m3+ — next.** persistent shared backends (redis/db) behind the spend +
+  rate-limit traits, key rotation end-to-end, mobile (uniffi) client, pages.
 
 the protocol, crypto choice, and crate layout are specified in [`PLAN.md`](PLAN.md),
 grounded in google's decompiled anonymous-tokens surface, chromium/android

@@ -28,6 +28,7 @@ pub mod pbrsa;
 pub mod ratelimit;
 mod serdehelp;
 pub mod spend;
+pub mod transparency;
 
 use blind_rsa_signatures::{
     BlindMessage, BlindSignature, BlindingResult, DefaultRng,

@@ -8,9 +8,10 @@
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use eat_pass_core::gate::{DevAttester, Measurement};
+use eat_pass_core::transparency::{verify_inclusion, verify_log};
 use eat_pass_core::{http, Client, IssuerPublicKey, SignResponse, TokenChallenge};
 
-use crate::wire::SignBody;
+use crate::wire::{KtResponse, SignBody};
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
@@ -22,11 +23,13 @@ pub async fn run(
     issuer_name: String,
     origin_info: String,
     present: Option<String>,
+    kt_log_pub: Option<[u8; 32]>,
 ) -> anyhow::Result<()> {
     let http_client = reqwest::Client::new();
+    let base = issuer_url.trim_end_matches('/');
 
     // 1. fetch + pin the issuer key.
-    let keys_url = format!("{}/keys", issuer_url.trim_end_matches('/'));
+    let keys_url = format!("{base}/keys");
     let pk: IssuerPublicKey = http_client
         .get(&keys_url)
         .send()
@@ -40,6 +43,33 @@ pub async fn run(
         pk.key_version,
         hex::encode(tkid)
     );
+
+    // 1b. key transparency (E.4): if the caller pinned a log key, refuse to use
+    //     an issuer key that is not committed in the issuer's published log.
+    if let Some(log_pub) = kt_log_pub {
+        let kt: KtResponse = http_client
+            .get(format!("{base}/kt"))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let served_pub = hex::decode(kt.log_pub.trim()).unwrap_or_default();
+        if served_pub.as_slice() != log_pub {
+            anyhow::bail!(
+                "kt: issuer serves log pubkey {} but client pinned {}",
+                kt.log_pub,
+                hex::encode(log_pub)
+            );
+        }
+        verify_log(&log_pub, &kt.records, &kt.signed_head)
+            .map_err(|e| anyhow::anyhow!("kt: log does not verify against pinned key: {e}"))?;
+        let seq = verify_inclusion(&kt.records, &tkid)
+            .map_err(|e| anyhow::anyhow!("kt: issuer key not in transparency log: {e}"))?;
+        eprintln!(
+            "kt          OK — issuer key included at seq {seq}, log head signed by pinned key"
+        );
+    }
 
     // 2. blind `count` token inputs for this challenge.
     let challenge = TokenChallenge::new(issuer_name, origin_info);

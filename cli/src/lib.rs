@@ -6,4 +6,5 @@ pub mod client;
 pub mod demo;
 pub mod issuer;
 pub mod origin;
+pub mod redeemer;
 pub mod wire;

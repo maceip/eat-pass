@@ -12,9 +12,10 @@
 //! production, a dev ed25519 statement here). See `eat-pass-core`.
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use eat_pass_cli::{client, demo, issuer, origin};
+use eat_pass_cli::{client, demo, issuer, origin, redeemer};
 
 #[derive(Parser)]
 #[command(
@@ -47,9 +48,15 @@ enum Cmd {
     Issuer {
         #[arg(long, default_value = "127.0.0.1:8088")]
         listen: SocketAddr,
-        /// Trusted dev attester verifying key (64 hex chars).
+        /// Attestation backend: `dev` (ed25519 dev statements), `uq`
+        /// (unified-quote CBOR EAT), `azure` (SEV-SNP vTPM bundle), or
+        /// `azure-tls` (attested-TLS leaf cert, the live Azure node's shape).
+        #[arg(long, default_value = "dev")]
+        gate: String,
+        /// Trusted dev attester verifying key (64 hex chars). Required for
+        /// `--gate dev`; ignored for `--gate uq`.
         #[arg(long)]
-        attester_key: String,
+        attester_key: Option<String>,
         /// An accepted measurement `value_x` (hex). Repeatable.
         #[arg(long = "allow", value_name = "HEX")]
         allow: Vec<String>,
@@ -95,6 +102,36 @@ enum Cmd {
         /// If set, immediately present the first token to this origin URL.
         #[arg(long, value_name = "URL")]
         present: Option<String>,
+        /// Pin the issuer's key-transparency log public key (64 hex chars). When
+        /// set, the client fetches `/kt` and refuses to use an issuer key that
+        /// is not committed in the signed log.
+        #[arg(long)]
+        kt_log_pub: Option<String>,
+    },
+
+    /// Verify a unified-quote EAT through the real gate (`UqVerifier`) and print
+    /// the extracted measurement. The eat is the hex of its CBOR bytes; the
+    /// binding is the 32-byte channel binding the eat's `eat_nonce` must equal.
+    VerifyEat {
+        /// EAT CBOR bytes, hex-encoded (e.g. from `uq build`/`uq run` output).
+        #[arg(long)]
+        eat: String,
+        /// Expected channel binding (64 hex chars) = the eat's eat_nonce.
+        #[arg(long)]
+        binding: String,
+    },
+
+    /// Verify a live Azure attested-TLS leaf certificate through the real gate
+    /// (`AzureTlsVerifier`) and print the SNP launch measurement. The cert is a
+    /// DER file (e.g. captured from `attest.secure.build:8443`); binding is the
+    /// 32-byte value_x the AK quote committed.
+    VerifyAzureTls {
+        /// Path to the DER-encoded TLS leaf certificate.
+        #[arg(long)]
+        cert: PathBuf,
+        /// Expected bound value_x (64 hex chars).
+        #[arg(long)]
+        binding: String,
     },
 
     /// Example origin: gate `GET /resource` on a `PrivateToken`.
@@ -109,6 +146,16 @@ enum Cmd {
         /// Origin info in the token challenge (must match the client).
         #[arg(long, default_value = "origin.eat-pass.dev")]
         origin_info: String,
+        /// Central redeemer URL for shared double-spend across replicas. If
+        /// unset, double-spend is tracked origin-locally.
+        #[arg(long, value_name = "URL")]
+        redeemer: Option<String>,
+    },
+
+    /// Central double-spend authority: `POST /redeem` shared by origin replicas.
+    Redeem {
+        #[arg(long, default_value = "127.0.0.1:8100")]
+        listen: SocketAddr,
     },
 }
 
@@ -142,6 +189,7 @@ async fn main() -> anyhow::Result<()> {
 
         Cmd::Issuer {
             listen,
+            gate,
             attester_key,
             allow,
             class,
@@ -150,7 +198,21 @@ async fn main() -> anyhow::Result<()> {
             max_per_epoch,
             epoch_secs,
         } => {
-            let attester_key = parse_hex32(&attester_key, "attester-key")?;
+            let backend = match gate.as_str() {
+                "dev" => {
+                    let key = attester_key
+                        .ok_or_else(|| anyhow::anyhow!("--gate dev requires --attester-key"))?;
+                    issuer::Backend::Dev {
+                        attester_key: parse_hex32(&key, "attester-key")?,
+                    }
+                }
+                "uq" => issuer::Backend::Uq,
+                "azure" => issuer::Backend::Azure,
+                "azure-tls" => issuer::Backend::AzureTls,
+                other => anyhow::bail!(
+                    "unknown --gate '{other}' (expected 'dev', 'uq', 'azure', or 'azure-tls')"
+                ),
+            };
             let allow = allow
                 .iter()
                 .map(|h| hex::decode(h.trim()).map_err(|e| anyhow::anyhow!("allow: bad hex: {e}")))
@@ -160,7 +222,7 @@ async fn main() -> anyhow::Result<()> {
             }
             issuer::run(
                 listen,
-                attester_key,
+                backend,
                 allow,
                 class,
                 class_version,
@@ -180,10 +242,14 @@ async fn main() -> anyhow::Result<()> {
             issuer_name,
             origin_info,
             present,
+            kt_log_pub,
         } => {
             let attester_seed = parse_hex32(&attester_seed, "attester-seed")?;
             let value_x = hex::decode(value_x.trim())
                 .map_err(|e| anyhow::anyhow!("value-x: bad hex: {e}"))?;
+            let kt_log_pub = kt_log_pub
+                .map(|h| parse_hex32(&h, "kt-log-pub"))
+                .transpose()?;
             client::run(
                 issuer,
                 attester_seed,
@@ -193,8 +259,46 @@ async fn main() -> anyhow::Result<()> {
                 issuer_name,
                 origin_info,
                 present,
+                kt_log_pub,
             )
             .await?;
+        }
+
+        Cmd::VerifyEat { eat, binding } => {
+            use eat_pass_core::gate::AttestationVerifier;
+            let eat = hex::decode(eat.trim()).map_err(|e| anyhow::anyhow!("eat: bad hex: {e}"))?;
+            let binding = parse_hex32(&binding, "binding")?;
+            let verifier = eat_pass_gate::UqVerifier::new();
+            match verifier.verify(&eat, &binding) {
+                Ok(m) => {
+                    println!("VALID");
+                    println!("platform   {}", m.platform);
+                    println!("value_x    {}", hex::encode(&m.value_x));
+                    println!("binding    {} (== eat_nonce)", hex::encode(binding));
+                }
+                Err(e) => {
+                    anyhow::bail!("INVALID: {e}");
+                }
+            }
+        }
+
+        Cmd::VerifyAzureTls { cert, binding } => {
+            use eat_pass_core::gate::AttestationVerifier;
+            let der = std::fs::read(&cert)
+                .map_err(|e| anyhow::anyhow!("read cert {}: {e}", cert.display()))?;
+            let binding = parse_hex32(&binding, "binding")?;
+            match eat_pass_gate::AzureTlsVerifier::new().verify(&der, &binding) {
+                Ok(m) => {
+                    println!("VALID");
+                    println!("platform     {}", m.platform);
+                    println!("measurement  {}", hex::encode(&m.value_x));
+                    println!(
+                        "value_x      {} (== bound qualifyingData)",
+                        hex::encode(binding)
+                    );
+                }
+                Err(e) => anyhow::bail!("INVALID: {e}"),
+            }
         }
 
         Cmd::Origin {
@@ -202,8 +306,13 @@ async fn main() -> anyhow::Result<()> {
             issuer,
             issuer_name,
             origin_info,
+            redeemer,
         } => {
-            origin::run(listen, issuer, issuer_name, origin_info).await?;
+            origin::run(listen, issuer, issuer_name, origin_info, redeemer).await?;
+        }
+
+        Cmd::Redeem { listen } => {
+            redeemer::run(listen).await?;
         }
     }
     Ok(())

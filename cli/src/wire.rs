@@ -2,6 +2,7 @@
 //! themselves live in `eat-pass-core` (RFC 9578/9577); this is only the
 //! request/response envelope for the `/sign` gate.
 
+use eat_pass_core::transparency::{KeyRecord, SignedHead};
 use eat_pass_core::SignRequest;
 use serde::{Deserialize, Serialize};
 
@@ -18,4 +19,24 @@ pub struct SignBody {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ErrorBody {
     pub error: String,
+}
+
+/// `GET /kt` body: the published key-transparency view. A client pins `log_pub`
+/// out of band, verifies `records` reproduce `signed_head`, and confirms the
+/// `/keys` token_key_id is included before trusting the issuer key.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct KtResponse {
+    pub log_pub: String,
+    pub records: Vec<KeyRecord>,
+    pub signed_head: SignedHead,
+}
+
+/// `POST /redeem` body: a central double-spend authority shared by origin
+/// replicas. `nonce` is hex of the token's 32-byte spend id; `key_epoch` is the
+/// issuer key version that scopes it. The redeemer returns 200 the first time a
+/// `(key_epoch, nonce)` is seen and 409 on any replay.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RedeemBody {
+    pub key_epoch: u32,
+    pub nonce: String,
 }

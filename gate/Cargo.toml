@@ -1,0 +1,21 @@
+[package]
+name = "eat-pass-gate"
+version = "0.1.0"
+description = "real attestation gate for eat-pass: verifies a unified-quote EAT and extracts the gated measurement"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+name = "eat_pass_gate"
+path = "src/lib.rs"
+
+[dependencies]
+eat-pass-core = { path = "../core" }
+# The portable unified-quote verifier. sev-snp covers the live Azure CVM node;
+# tdx is cheap to include (no extra heavy deps) and covers Intel TDX / GCP once
+# unblocked. nitro is intentionally left off here to keep the gate lean.
+unified-quote = { git = "https://github.com/maceip/unified-quote", branch = "main", default-features = false, features = ["sev-snp", "tdx"] }
+hex = { workspace = true }
+serde_json = { workspace = true }

@@ -10,6 +10,7 @@ on:
     paths:
       - "core/**"
       - "cli/**"
+      - "gate/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/release.yml"
