@@ -8,7 +8,7 @@
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use eat_pass_core::gate::{DevAttester, Measurement};
-use eat_pass_core::transparency::{verify_inclusion, verify_log};
+use eat_pass_core::transparency::{verify_consistency, verify_inclusion, verify_log, SignedHead};
 use eat_pass_core::{http, Client, IssuerPublicKey, SignResponse, TokenChallenge};
 
 use crate::wire::{KtResponse, SignBody};
@@ -89,6 +89,7 @@ pub async fn run(
     origin_info: String,
     present: Option<String>,
     kt_log_pub: Option<[u8; 32]>,
+    kt_known_head: Option<SignedHead>,
 ) -> anyhow::Result<()> {
     let http_client = reqwest::Client::new();
     let base = issuer_url.trim_end_matches('/');
@@ -134,6 +135,24 @@ pub async fn run(
         eprintln!(
             "kt          OK — issuer key included at seq {seq}, log head signed by pinned key"
         );
+
+        // Consistency across rotation (E.4): if the caller remembers an earlier
+        // signed head, require that the current log *extends* it (the old head
+        // must reappear mid-chain). This catches an issuer that rewrote history
+        // to hide a key it briefly served.
+        if let Some(old) = &kt_known_head {
+            verify_consistency(old, &kt.records).map_err(|e| {
+                anyhow::anyhow!("kt: new log is not consistent with the head you pinned: {e}")
+            })?;
+            eprintln!(
+                "kt          OK — log is consistent with previously-seen head seq {}",
+                old.seq
+            );
+        }
+
+        // Emit the head we observed so a follow-up run (e.g. after a rotation)
+        // can pin it via --kt-known-head and prove consistency.
+        eprintln!("kt-head     {}:{}", kt.signed_head.seq, kt.signed_head.head);
     }
 
     // 2. blind `count` token inputs for this challenge.

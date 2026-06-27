@@ -126,6 +126,12 @@ enum Cmd {
         /// is not committed in the signed log.
         #[arg(long)]
         kt_log_pub: Option<String>,
+        /// A previously-observed signed head as `<seq>:<head-hex>` (printed as
+        /// `kt-head` by an earlier run). When set with --kt-log-pub, the client
+        /// requires the current log to be a consistent *append* to it — proving
+        /// a rotation didn't rewrite history.
+        #[arg(long)]
+        kt_known_head: Option<String>,
     },
 
     /// Verify a unified-quote EAT through the real gate (`UqVerifier`) and print
@@ -204,6 +210,26 @@ fn parse_hex32(s: &str, what: &str) -> anyhow::Result<[u8; 32]> {
     bytes
         .try_into()
         .map_err(|_| anyhow::anyhow!("{what}: expected 32 bytes (64 hex chars)"))
+}
+
+/// Parse a `<seq>:<head-hex>` pair into a partial `SignedHead` for the
+/// consistency check. Only `seq` and `head` are needed (the signature was
+/// already verified when this head was first observed), so `sig` is left empty.
+fn parse_known_head(s: &str) -> anyhow::Result<eat_pass_core::transparency::SignedHead> {
+    let (seq, head) = s
+        .trim()
+        .split_once(':')
+        .ok_or_else(|| anyhow::anyhow!("kt-known-head must be <seq>:<head-hex>"))?;
+    let seq: u64 = seq
+        .parse()
+        .map_err(|e| anyhow::anyhow!("kt-known-head seq: {e}"))?;
+    // Validate the head is 32-byte hex up front.
+    let _ = parse_hex32(head, "kt-known-head head")?;
+    Ok(eat_pass_core::transparency::SignedHead {
+        seq,
+        head: head.trim().to_string(),
+        sig: String::new(),
+    })
 }
 
 #[tokio::main]
@@ -287,6 +313,7 @@ async fn main() -> anyhow::Result<()> {
             origin_info,
             present,
             kt_log_pub,
+            kt_known_head,
         } => {
             let attest = match attest.as_str() {
                 "dev" => {
@@ -306,6 +333,7 @@ async fn main() -> anyhow::Result<()> {
             let kt_log_pub = kt_log_pub
                 .map(|h| parse_hex32(&h, "kt-log-pub"))
                 .transpose()?;
+            let kt_known_head = kt_known_head.map(|s| parse_known_head(&s)).transpose()?;
             client::run(
                 issuer,
                 attest,
@@ -314,6 +342,7 @@ async fn main() -> anyhow::Result<()> {
                 origin_info,
                 present,
                 kt_log_pub,
+                kt_known_head,
             )
             .await?;
         }

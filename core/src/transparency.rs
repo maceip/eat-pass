@@ -403,4 +403,26 @@ mod tests {
             Err(TransparencyError::NotConsistent)
         );
     }
+
+    #[test]
+    fn multi_rotation_stays_consistent_from_every_prefix() {
+        // Model three rotations (4 keys total). A client that saw *any* earlier
+        // signed head must accept every later head as a consistent append.
+        let signer = LogSigner::from_seed([5u8; 32]);
+        let mut log = KeyLog::new();
+        let mut heads = Vec::new();
+        for v in 1..=4u32 {
+            log.append(&issuer_pk(v), (v as u64) * 1000).unwrap();
+            heads.push(signer.sign(&log));
+        }
+        let final_records = log.records().to_vec();
+        verify_log(&signer.public(), &final_records, heads.last().unwrap()).unwrap();
+        for (i, old) in heads.iter().enumerate() {
+            verify_consistency(old, &final_records)
+                .unwrap_or_else(|e| panic!("head after rotation {i} should extend: {e}"));
+        }
+        // The current key (v4) is included at the tail.
+        let seq = verify_inclusion(&final_records, &issuer_pk(4).token_key_id().unwrap()).unwrap();
+        assert_eq!(seq, 3);
+    }
 }

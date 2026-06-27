@@ -1,17 +1,25 @@
 //! `eat-pass issuer` — the issuance service.
 //!
-//! `GET /keys` publishes the issuer public key (clients pin `token_key_id =
-//! SHA256(SPKI)` from it). `POST /sign` runs the attestation gate
+//! `GET /keys` publishes the current issuer public key (clients pin
+//! `token_key_id = SHA256(SPKI)` from it); `GET /keys/{version}` serves a
+//! historical key so an origin can verify a token minted under a now-rotated
+//! key. `POST /sign` runs the attestation gate
 //! ([`eat_pass_core::gate::issue_gated_with_limit`]) and blind-signs only if the
 //! request carries a valid eat for an accepted measurement class, commits to the
 //! request's channel binding, and is within the per-attestation epoch quota.
+//!
+//! `GET /kt` publishes the append-only, ed25519-signed key-transparency log.
+//! `POST /rotate` (admin-gated) generates a new signing key, appends it to the
+//! log, re-signs the head, and makes it current — so clients that pinned the
+//! *log* key see the new key arrive as a consistent append (m3 key rotation).
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::{
-    extract::State,
-    http::StatusCode,
+    extract::{Path, State},
+    http::{HeaderMap, StatusCode},
     routing::{get, post},
     Json, Router,
 };
@@ -20,12 +28,13 @@ use eat_pass_core::gate::{
     issue_gated_with_limit, AttestationVerifier, ClassGated, DevVerifier, GateError, Measurement,
     MeasurementClass,
 };
-use eat_pass_core::transparency::{KeyLog, KeyRecord, LogSigner, SignedHead};
+use eat_pass_core::transparency::{KeyLog, LogSigner, SignedHead};
 use eat_pass_core::{Issuer, IssuerPublicKey, SignResponse};
 use eat_pass_gate::{AzureTlsVerifier, AzureUqVerifier, UqVerifier};
+use tokio::sync::RwLock;
 
 use crate::store::LimitBackend;
-use crate::wire::{ErrorBody, KtResponse, SignBody};
+use crate::wire::{ErrorBody, KtResponse, RotateResponse, SignBody};
 
 /// Which attestation backend gates issuance.
 pub enum Gate {
@@ -50,15 +59,28 @@ impl AttestationVerifier for Gate {
     }
 }
 
+/// The mutable, rotation-aware part of the issuer: the current signing key, the
+/// history of published public keys (so origins can verify older tokens), and
+/// the transparency log + its current signed head.
+struct Rotating {
+    current: Issuer,
+    history: HashMap<u32, IssuerPublicKey>,
+    log: KeyLog,
+    signed_head: SignedHead,
+}
+
 struct IssuerState {
-    issuer: Issuer,
+    rot: RwLock<Rotating>,
     verifier: Gate,
     limiter: LimitBackend,
-    /// Published key-transparency view: the log records, the ed25519-signed
-    /// head, and the log public key clients pin.
-    kt_records: Vec<KeyRecord>,
-    kt_signed_head: SignedHead,
+    /// Long-lived log signing key; re-signs the head on every rotation.
+    log_signer: LogSigner,
+    /// The log public key clients pin (stable across rotations).
     kt_log_pub: [u8; 32],
+    /// If set, `POST /rotate` requires header `x-admin-token` to match.
+    admin_token: Option<String>,
+    /// Modulus size used when minting a fresh key on rotation.
+    modulus_bits: usize,
 }
 
 /// Issuance gate backend selected on the command line.
@@ -114,6 +136,7 @@ pub async fn run(
             Gate::AzureTls(ClassGated::new(AzureTlsVerifier::new(), class))
         }
     };
+
     // Rate-limit state is in-memory by default; a `redis://` URL makes it shared
     // across issuer replicas so the per-attestation quota is global, not
     // per-process (m3).
@@ -123,27 +146,37 @@ pub async fn run(
     // Key transparency (E.4): publish this key in an append-only, signed log so
     // clients can pin the *log* key and refuse any issuer key not committed here.
     // The log seed is deterministic-from-env or random per process; in prod the
-    // operator persists it and the log spans rotations.
+    // operator persists it so the log spans process restarts and rotations.
     let log_seed = kt_seed_from_env();
     let log_signer = LogSigner::from_seed(log_seed);
     let mut key_log = KeyLog::new();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let now = unix_now();
     key_log
         .append(&pk, now)
         .map_err(|e| anyhow::anyhow!("kt append: {e}"))?;
     let kt_signed_head = log_signer.sign(&key_log);
     let kt_log_pub = log_signer.public();
 
+    let admin_token = std::env::var("EATPASS_ADMIN_TOKEN")
+        .ok()
+        .filter(|s| !s.is_empty());
+
+    let mut history = HashMap::new();
+    history.insert(pk.key_version, pk.clone());
+
     let state = Arc::new(IssuerState {
-        issuer,
+        rot: RwLock::new(Rotating {
+            current: issuer,
+            history,
+            log: key_log,
+            signed_head: kt_signed_head,
+        }),
         verifier,
         limiter,
-        kt_records: key_log.records().to_vec(),
-        kt_signed_head,
+        log_signer,
         kt_log_pub,
+        admin_token: admin_token.clone(),
+        modulus_bits,
     });
 
     eprintln!("  token_key_id   {}", hex::encode(tkid));
@@ -153,17 +186,36 @@ pub async fn run(
     );
     eprintln!("  rate limit     {max_per_epoch}/epoch ({epoch_secs}s) per attested build [{rate_label} backend]");
     eprintln!("  kt log pubkey  {}", hex::encode(kt_log_pub));
+    eprintln!(
+        "  rotation       {}",
+        if admin_token.is_some() {
+            "POST /rotate enabled (x-admin-token required)"
+        } else {
+            "POST /rotate disabled (set EATPASS_ADMIN_TOKEN to enable)"
+        }
+    );
 
     let app = Router::new()
         .route("/keys", get(keys))
+        .route("/keys/:version", get(keys_version))
         .route("/kt", get(kt))
         .route("/sign", post(sign))
+        .route("/rotate", post(rotate))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(listen).await?;
-    eprintln!("eat-pass issuer: listening on http://{listen}  (GET /keys, GET /kt, POST /sign)");
+    eprintln!(
+        "eat-pass issuer: listening on http://{listen}  (GET /keys, /keys/:v, /kt, POST /sign, /rotate)"
+    );
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Key-log signing seed: hex in `EATPASS_KT_SEED` (64 chars), else random.
@@ -182,14 +234,32 @@ fn kt_seed_from_env() -> [u8; 32] {
 }
 
 async fn keys(State(state): State<Arc<IssuerState>>) -> Json<IssuerPublicKey> {
-    Json(state.issuer.public())
+    let g = state.rot.read().await;
+    Json(g.current.public())
+}
+
+/// Serve a historical (or current) issuer public key by version, so an origin
+/// holding a token minted under a now-rotated key can fetch the key to verify
+/// it. 404 if the version was never published by this issuer.
+async fn keys_version(
+    State(state): State<Arc<IssuerState>>,
+    Path(version): Path<u32>,
+) -> Result<Json<IssuerPublicKey>, (StatusCode, Json<ErrorBody>)> {
+    let g = state.rot.read().await;
+    g.history.get(&version).cloned().map(Json).ok_or_else(|| {
+        err(
+            StatusCode::NOT_FOUND,
+            format!("no such key_version {version}"),
+        )
+    })
 }
 
 async fn kt(State(state): State<Arc<IssuerState>>) -> Json<KtResponse> {
+    let g = state.rot.read().await;
     Json(KtResponse {
         log_pub: hex::encode(state.kt_log_pub),
-        records: state.kt_records.clone(),
-        signed_head: state.kt_signed_head.clone(),
+        records: g.log.records().to_vec(),
+        signed_head: g.signed_head.clone(),
     })
 }
 
@@ -204,13 +274,8 @@ async fn sign(
         )
     })?;
 
-    match issue_gated_with_limit(
-        &state.issuer,
-        &state.verifier,
-        &body.req,
-        &eat,
-        &state.limiter,
-    ) {
+    let g = state.rot.read().await;
+    match issue_gated_with_limit(&g.current, &state.verifier, &body.req, &eat, &state.limiter) {
         Ok(resp) => Ok(Json(resp)),
         Err(e) => {
             use eat_pass_core::gate::GateError::*;
@@ -222,6 +287,77 @@ async fn sign(
             Err(err(code, e.to_string()))
         }
     }
+}
+
+/// Admin-gated key rotation: mint a fresh signing key, append it to the
+/// transparency log, re-sign the head, and make it current. Tokens already
+/// minted under the previous key keep verifying (origins fetch it via
+/// `/keys/{version}`); spend sets are epoched by key_version so they stay
+/// independent.
+async fn rotate(
+    State(state): State<Arc<IssuerState>>,
+    headers: HeaderMap,
+) -> Result<Json<RotateResponse>, (StatusCode, Json<ErrorBody>)> {
+    let Some(expected) = state.admin_token.as_deref() else {
+        return Err(err(
+            StatusCode::NOT_FOUND,
+            "rotation disabled (no admin token configured)".into(),
+        ));
+    };
+    let presented = headers
+        .get("x-admin-token")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    // Constant-ish comparison is unnecessary here (the token is operator-held,
+    // not user-supplied), but reject empties explicitly.
+    if presented.is_empty() || presented != expected {
+        return Err(err(
+            StatusCode::FORBIDDEN,
+            "bad or missing x-admin-token".into(),
+        ));
+    }
+
+    // Determine the next version under a short read lock, then do the expensive
+    // keygen OUTSIDE any lock so concurrent /sign and /keys keep serving.
+    let next_version = {
+        let g = state.rot.read().await;
+        g.current.public().key_version + 1
+    };
+    let new_issuer = Issuer::generate(next_version, state.modulus_bits)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("keygen: {e}")))?;
+    let new_pk = new_issuer.public();
+    let new_tkid = new_pk.token_key_id().map_err(|e| {
+        err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("token_key_id: {e}"),
+        )
+    })?;
+    let now = unix_now();
+
+    // Commit under the write lock: append, re-sign, install as current.
+    let (seq, head_hex) = {
+        let mut g = state.rot.write().await;
+        let seq = g
+            .log
+            .append(&new_pk, now)
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("kt append: {e}")))?;
+        g.signed_head = state.log_signer.sign(&g.log);
+        let head_hex = g.signed_head.head.clone();
+        g.history.insert(new_pk.key_version, new_pk.clone());
+        g.current = new_issuer;
+        (seq, head_hex)
+    };
+
+    eprintln!(
+        "issuer rotated → key_version {next_version} (kt seq {seq}, token_key_id {})",
+        hex::encode(new_tkid)
+    );
+    Ok(Json(RotateResponse {
+        key_version: next_version,
+        token_key_id: hex::encode(new_tkid),
+        kt_seq: seq,
+        head: head_hex,
+    }))
 }
 
 fn err(code: StatusCode, msg: String) -> (StatusCode, Json<ErrorBody>) {

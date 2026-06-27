@@ -31,6 +31,18 @@ pub struct KtResponse {
     pub signed_head: SignedHead,
 }
 
+/// `POST /rotate` response: the newly-installed signing key and where it landed
+/// in the transparency log. After this, `GET /keys` serves `key_version` and the
+/// log head advances to `kt_seq` — a client that pinned the log key sees the new
+/// key as a *consistent append* to the chain.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RotateResponse {
+    pub key_version: u32,
+    pub token_key_id: String,
+    pub kt_seq: u64,
+    pub head: String,
+}
+
 /// `POST /redeem` body: a central double-spend authority shared by origin
 /// replicas. `nonce` is hex of the token's 32-byte spend id; `key_epoch` is the
 /// issuer key version that scopes it. The redeemer returns 200 the first time a
