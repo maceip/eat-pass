@@ -6,11 +6,32 @@
 //! ed25519-signed dev statement) so the protocol is testable on every platform
 //! with no TEE hardware. The real `unified-quote` EAT verifier lives in the
 //! `eat-pass-gate` crate (milestone m2).
+//!
+//! ## Trust boundary: attester vs. issuer (A.2)
+//!
+//! Conceptually there are two roles:
+//! - the **attester/verifier** decides *eligibility* (is this a valid eat from
+//!   an accepted build, bound to this request?), and
+//! - the **issuer** holds the signing key and *mints* the blind signature.
+//!
+//! [`issue_gated`] runs both in one call, so a single process today holds the
+//! signing key **and** judges attestations — a deliberately documented
+//! collapse. The seam to split them is already present: the gate takes the
+//! `verifier: &V` ([`AttestationVerifier`]) and the `issuer` as separate
+//! objects. To run them as separate services, host the [`AttestationVerifier`]
+//! behind its own endpoint that returns a short-lived, signed *issuance
+//! authorization* (binding + accepted class), and have the issuer blind-sign
+//! only on presentation of that authorization. The [`MeasurementClass`] +
+//! channel-binding values are exactly what such an authorization would carry.
+//! Until that split is deployed, the assumption is: the issuer process is
+//! trusted to faithfully run the verifier.
 
 use std::collections::HashSet;
 
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
+
+use crate::ratelimit::{RateLimitError, RateLimiter};
 
 const DEV_EAT_DOMAIN: &[u8] = b"eat-pass/v0/dev-eat\0";
 
@@ -29,6 +50,65 @@ impl Measurement {
             platform: platform.into(),
             value_x,
         }
+    }
+
+    /// A coarse, privacy-preserving rate-limit identity for this measurement
+    /// (E.7). It is a hash of the *build*, never an identity — so the limiter
+    /// caps farming per accepted build per epoch without deanonymizing anyone.
+    pub fn rate_limit_id(&self) -> Vec<u8> {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(b"eat-pass/v0/ratelimit-id\0");
+        h.update(self.platform.as_bytes());
+        h.update([0]);
+        h.update(&self.value_x);
+        h.finalize().to_vec()
+    }
+}
+
+/// A named set of accepted measurements — the anonymity set (E.5).
+///
+/// Gating on a *class* (e.g. "accepted-builds-v1") rather than an exact
+/// `value_x` widens the anonymity set to everyone running any build in the
+/// class. The class `version` lets the accepted set roll forward without
+/// silently changing what a given class name means. Paired with
+/// [`crate::pbrsa`], the class name becomes auditable public metadata on the
+/// issued token.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MeasurementClass {
+    pub name: String,
+    pub version: u32,
+    accepted: HashSet<Vec<u8>>,
+}
+
+impl MeasurementClass {
+    pub fn new(
+        name: impl Into<String>,
+        version: u32,
+        accepted: impl IntoIterator<Item = Vec<u8>>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            version,
+            accepted: accepted.into_iter().collect(),
+        }
+    }
+
+    pub fn contains(&self, value_x: &[u8]) -> bool {
+        self.accepted.contains(value_x)
+    }
+
+    /// The policy-class label bound as public metadata (`name@vN`).
+    pub fn policy_label(&self) -> String {
+        format!("{}@v{}", self.name, self.version)
+    }
+
+    pub fn len(&self) -> usize {
+        self.accepted.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.accepted.is_empty()
     }
 }
 
@@ -110,23 +190,35 @@ impl DevAttester {
     }
 }
 
-/// Verifies dev eats against a trusted attester key and a measurement allowlist.
+/// Verifies dev eats against a trusted attester key and an accepted
+/// [`MeasurementClass`] (the anonymity set, E.5).
 pub struct DevVerifier {
     vk: VerifyingKey,
-    allow: HashSet<Vec<u8>>,
+    class: MeasurementClass,
 }
 
 impl DevVerifier {
+    /// Build a verifier from a flat allowlist (an anonymous class "default@v1").
     pub fn new(
         attester_key: [u8; 32],
         allow: impl IntoIterator<Item = Vec<u8>>,
     ) -> Result<Self, GateError> {
+        Self::new_for_class(attester_key, MeasurementClass::new("default", 1, allow))
+    }
+
+    /// Build a verifier gated on a named measurement class.
+    pub fn new_for_class(
+        attester_key: [u8; 32],
+        class: MeasurementClass,
+    ) -> Result<Self, GateError> {
         let vk = VerifyingKey::from_bytes(&attester_key)
             .map_err(|e| GateError::AttestationInvalid(e.to_string()))?;
-        Ok(Self {
-            vk,
-            allow: allow.into_iter().collect(),
-        })
+        Ok(Self { vk, class })
+    }
+
+    /// The accepted measurement class (anonymity set).
+    pub fn class(&self) -> &MeasurementClass {
+        &self.class
     }
 }
 
@@ -152,7 +244,7 @@ impl AttestationVerifier for DevVerifier {
         if &eat.binding != expected_binding {
             return Err(GateError::BindingMismatch);
         }
-        if !self.allow.contains(&measurement.value_x) {
+        if !self.class.contains(&measurement.value_x) {
             return Err(GateError::MeasurementNotAllowed);
         }
         Ok(measurement)
@@ -176,5 +268,54 @@ pub fn issue_gated<V: AttestationVerifier>(
     let _measurement = verifier.verify(eat, &binding)?;
     issuer
         .blind_sign(req)
+        .map_err(|e| GateError::Unknown(e.to_string()))
+}
+
+/// Like [`issue_gated`] but enforces a per-attestation issuance quota (E.7)
+/// before signing. The limiter is keyed on [`Measurement::rate_limit_id`] — a
+/// hash of the build, never an identity — and charged the batch size.
+pub fn issue_gated_with_limit<V: AttestationVerifier, R: RateLimiter>(
+    issuer: &crate::Issuer,
+    verifier: &V,
+    req: &crate::SignRequest,
+    eat: &[u8],
+    limiter: &R,
+) -> Result<crate::SignResponse, GateError> {
+    let binding = crate::binding_of(&req.blinded);
+    if binding != req.binding {
+        return Err(GateError::BindingMismatch);
+    }
+    let measurement = verifier.verify(eat, &binding)?;
+    limiter
+        .try_consume(&measurement.rate_limit_id(), req.blinded.len() as u32)
+        .map_err(|RateLimitError::Exceeded| GateError::QuotaExceeded)?;
+    issuer
+        .blind_sign(req)
+        .map_err(|e| GateError::Unknown(e.to_string()))
+}
+
+/// Gate + issue under the partially-blind path (E.5 + E.6): verify the eat,
+/// confirm its measurement is in `verifier`'s accepted class, then blind-sign
+/// the blinded messages under that class as auditable public metadata. The
+/// origin later sees only the class, never the exact `value_x`.
+pub fn issue_gated_pbrsa<V: AttestationVerifier>(
+    pb_issuer: &crate::pbrsa::PbIssuer,
+    verifier: &V,
+    blinded: &[blind_rsa_signatures::BlindMessage],
+    binding: &[u8; 32],
+    class: &MeasurementClass,
+    eat: &[u8],
+) -> Result<Vec<blind_rsa_signatures::BlindSignature>, GateError> {
+    let recomputed = crate::binding_of(blinded);
+    if &recomputed != binding {
+        return Err(GateError::BindingMismatch);
+    }
+    let measurement = verifier.verify(eat, binding)?;
+    if !class.contains(&measurement.value_x) {
+        return Err(GateError::MeasurementNotAllowed);
+    }
+    let policy = crate::pbrsa::PolicyClass::new(class.policy_label());
+    pb_issuer
+        .blind_sign(blinded, &policy)
         .map_err(|e| GateError::Unknown(e.to_string()))
 }

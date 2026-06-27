@@ -75,17 +75,35 @@ primitive: **RSABSSA (rfc 9474)**, publicly verifiable.
   (jedisct1) — a direct rfc 9474 implementation; cross-platform, no system deps.
 - key size: rsa-3072 default (2048 supported for parity with deployed privacy-pass
   issuers; configurable per key version).
-- message: client picks a random 32-byte `nonce`; signed message is
-  `H(use_case ‖ nonce)` with message randomization per `MessageMaskType`
-  (default `CONCAT`, i.e. rfc 9474 randomized).
-- hash: sha384 default (`HashType`), sha256 selectable.
-- a **token** = `(use_case, nonce, msg_randomizer?, signature)`. publicly verified
-  against the issuer public key; offline; one-time-spendable via `nonce`.
+- profile: **RSABSSA-SHA384-PSS-Deterministic** (no per-message randomizer) — the
+  Privacy Access Token (PAT) profile, so any rfc-9578 origin can verify our
+  tokens (implemented; was Randomized in m0's first cut).
+- message: client picks a random 32-byte `nonce`; the signed message is the rfc
+  9578 **token_input** = `token_type(0x0002) ‖ nonce ‖ challenge_digest ‖
+  token_key_id`. `challenge_digest = SHA256(TokenChallenge)` (rfc 9577);
+  `token_key_id = SHA256(SPKI)` pins the issuer key into the token.
+- hash: sha384 (pss).
+- a **token** = rfc 9578 `Token{token_type, nonce, challenge_digest,
+  token_key_id, authenticator}`. publicly verified against the issuer public key;
+  offline; one-time-spendable via `nonce`. `Token::{to_bytes,from_bytes}` is the
+  wire form; `http::{www_authenticate,authorization,parse_authorization}` is the
+  rfc 9577 `PrivateToken` http carriage.
 
 why blind-rsa and not voprf (rfc 9497): publicly verifiable (origin needs only a
 public key, no issuer round-trip at redemption), matches google + apple choices,
 and keeps the origin trivially deployable. voprf is a possible second token type
 later for the privately-verifiable / rate-limited use case.
+
+### partially-blind variant (the anonymity-set + auditable-policy design)
+
+the centerpiece of the gate is **partially-blind rsa (rsapbssa)**, in
+[`core/src/pbrsa.rs`](core/src/pbrsa.rs). the issuer binds a **measurement policy
+class** (e.g. `accepted-builds@v1`) into the signature as *public metadata* via a
+metadata-derived key, while the token stays blind. result: the origin sees only
+"issued under policy X" (it derives the per-policy key to verify), the issuer
+still can't link issuance to redemption, and the class is cryptographically
+auditable. anonymity is over everyone sharing a `(class, key_version)` — far
+larger than per-`value_x`.
 
 ---
 
@@ -192,25 +210,68 @@ other four repos now use). the client is the interesting target:
 
 ## 9. milestones
 
-- **m0 — core (this is the next pr).** blind-rsa issue/finalize/verify, token type,
-  channel binding, `AttestationVerifier` trait + `DevVerifier`, roundtrip + tamper
-  tests. green on all platforms.
-- **m1 — issuer + client + origin.** axum `/keys` + `/sign`, client `request`,
-  origin middleware + example, end-to-end test with `DevVerifier`.
-- **m2 — real eat gate.** `UqVerifier` against unified-quote; demo: a token minted
-  only when the request carries a valid eat from the live azure node; measurement
-  allowlist.
-- **m3 — hardening.** double-spend store, key rotation/versions, use-case registry,
-  rate-limit verdicts, fuzz the parsers.
+- **m0 — core (done).** blind-rsa issue/finalize/verify, token type, channel
+  binding, `AttestationVerifier` trait + `DevVerifier`, roundtrip + tamper tests.
+  green on all platforms.
+- **m0.5 — review-driven hardening (done, this pr).** folded the privacy-pass
+  review into the credential layer:
+  - **deterministic profile** (RSABSSA-SHA384-PSS-Deterministic), dropping the
+    message randomizer for pat interop (E.3).
+  - **rfc 9578 token** (`token_type/nonce/challenge_digest/token_key_id/
+    authenticator`) + `to_bytes`/`from_bytes`, and **rfc 9577** `PrivateToken`
+    http helpers (E.1).
+  - **`TokenChallenge`** (issuer_name, origin_info, redemption_context) replaces
+    the coarse `UseCase`; `redemption_context` doubles as the per-request
+    freshness nonce (E.2, and the L1.1 tie-in on the eat side).
+  - **`token_key_id = SHA256(SPKI)`** pinned in every token + a
+    `check_key_consistency` helper (E.4).
+  - **`MeasurementClass`** gating (anonymity set, E.5) and **partially-blind
+    rsa** carrying the class as auditable public metadata (E.6).
+  - **rate limiting** (`ratelimit::InMemoryRateLimiter` + `issue_gated_with_limit`,
+    backing `QuotaExceeded`, E.7) and an **epoched double-spend store**
+    (`spend::InMemorySpentStore`, E.8).
+  - **issuance batching** documented on `Client::begin` (E.9).
+  - attester/issuer **trust-boundary** documented + seamed in `gate` (A.2).
+- **m1 — issuer + client + origin.** axum `/keys` + `/sign` (gated), client
+  `request`, origin middleware + example using the rfc 9577 headers, end-to-end
+  test with `DevVerifier`, cross-platform release of `eat-pass`. depends on m0.5.
+- **m2 — real eat gate + key transparency.** `UqVerifier` against unified-quote
+  (live azure sev-snp node); wire the **measurement class** to the unified-quote
+  registry trust-root + the new signed snapshot (R.2); plan/stand up an
+  **append-only key-transparency log** so pinned `token_key_id`s are globally
+  consistent (the second half of E.4). depends on R.1 (registry sig verification,
+  done) and the snapshot (R.2, done).
+- **m3 — operational hardening.** persist the spend store + rate limiter behind a
+  shared backend (multi-replica issuer); origin-local vs central `/redeem` (E.8);
+  tune issuance batch size against the rate-limit policy (E.9); fuzz the token +
+  challenge parsers; key rotation/versioning end-to-end.
 - **m4 — mobile + pages.** uniffi android/ios client; github pages site (family
-  style + canon scroll); cross-platform release of `eat-pass`.
+  style + canon scroll).
+
+### recommended execution order (carried from the review)
+
+`R.1 → E.1+E.2 → E.3 → E.4 → E.5+E.6 → E.7+E.8 → A.2`. R.1 and the credential-layer
+items (E.1–E.9) plus A.2 are implemented in m0.5; the remaining work (key
+transparency, the real `UqVerifier`, shared-state hardening) is m2–m3 above.
 
 ---
 
 ## 10. open questions
 
-- token type id: register our own privacy-pass `0x0002` profile, or stay json-only
-  until interop is needed?
-- should the allowlist itself be an attested artifact (turtles all the way down)?
-- central redemption (hidden-metadata / global double-spend) vs purely
-  origin-local — pick per deployment, support both.
+- **key transparency** (E.4, m2): origin-pinned `token_key_id` defeats a static
+  split-view, but a fully consistent guarantee needs an append-only log of issuer
+  keys that clients can audit. host our own (sigstore-style) or piggyback an
+  existing transparency log? what witness/gossip model?
+- **measurement class as an attested artifact** (E.5): should the
+  `MeasurementClass`/accepted-build set itself be a signed unified-quote registry
+  snapshot (R.2) so "what counts as the class" is itself attestable + revocable —
+  turtles all the way down. (leaning yes; the snapshot machinery now exists.)
+- **central redemption vs origin-local** (E.8): the epoched `SpentStore` trait
+  supports both; pick per deployment. central `/redeem` enables global
+  double-spend + hidden-metadata variants at the cost of an origin→service hop.
+- **rate-limit identity** (E.7): the per-attestation id is currently a hash of the
+  *build* (caps farming per accepted build per epoch). an ARC-style per-client
+  anonymous counter would be finer-grained without deanonymizing — worth it?
+- **attester/issuer split** (A.2): when do we actually run the
+  `AttestationVerifier` as a separate service that mints a signed issuance
+  authorization, vs. the documented collapsed (single-process) trust assumption?
