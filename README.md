@@ -120,8 +120,24 @@ eat-pass origin --redeemer http://127.0.0.1:8100   # every replica points here
   (`eat-pass redeem` + `origin --redeemer`) for shared cross-replica
   double-spend. (gcp/tdx node still blocked; the tdx verifier path is compiled
   and ready.)
-- **m3+ — next.** persistent shared backends (redis/db) behind the spend +
-  rate-limit traits, key rotation end-to-end, mobile (uniffi) client, pages.
+- **m3 — done.** operational hardening. a networked **redis** backend (cargo
+  feature `redis`) behind the same atomic `SpentStore` / `RateLimiter` traits —
+  `eat-pass redeem --backend redis://…` and `issuer --rate-backend redis://…`
+  give a multi-replica issuer/redeemer shared, durable state (fail-closed on
+  outage); **key rotation end-to-end** — `POST /rotate` (admin-gated) mints a new
+  signing key, appends it to the transparency log, and keeps serving the old one
+  at `/keys/{version}`, while the client proves the log stayed consistent across
+  the rotation with `--kt-known-head`; and the token + auth-header **parsers are
+  fuzzed** (libFuzzer harness in `core/fuzz/` + an always-on deterministic smoke
+  test). verified live: a clean in-CVM `--attest azure` mint (the client binds
+  `value_x = channel binding` via the vTPM AK quote) gated through
+  `AzureUqVerifier` to the AMD Milan root on `attest.secure.build`.
+- **m4 — done.** reach. a [GitHub Pages site](https://maceip.github.io/eat-pass/)
+  in the family style, and [`eat-pass-mobile`](mobile/) — the client credential
+  math exposed to **Android (Kotlin)** and **iOS (Swift)** via UniFFI (HTTP +
+  attestation stay host-native; blinding secrets never cross FFI).
+- **still blocked.** the gcp/tdx node; the tdx verifier path is compiled and
+  ready and slots into the same gate the moment a live node is available.
 
 the protocol, crypto choice, and crate layout are specified in [`PLAN.md`](PLAN.md),
 grounded in google's decompiled anonymous-tokens surface, chromium/android

@@ -254,15 +254,22 @@ other four repos now use). the client is the interesting target:
   `verify_consistency`; the issuer publishes it at `/kt` and the client pins it
   with `--kt-log-pub`. (gcp/tdx node still blocked; the tdx verifier is compiled
   and ready behind the same path.)
-- **m3 — operational hardening.** the trait seam is in place: `spend::SpentStore`
-  and `ratelimit::RateLimiter` are atomic `&self` interfaces, and a **central
-  redeemer** (`eat-pass redeem` + `origin --redeemer`) already shares
-  double-spend across origin replicas (E.8). remaining: persist both behind a
-  networked backend (redis/db) implementing those traits for a multi-replica
-  issuer; tune issuance batch size against the rate-limit policy (E.9); fuzz the
-  token + challenge parsers; key rotation/versioning end-to-end.
-- **m4 — mobile + pages.** uniffi android/ios client; github pages site (family
-  style + canon scroll).
+- **m3 — operational hardening (done).** the atomic `spend::SpentStore` /
+  `ratelimit::RateLimiter` seam now has a **networked redis backend** (cargo
+  feature `redis`, `cli/src/store.rs`): `SADD`-per-epoch spend + an atomic
+  `INCRBY`/cap Lua script, wired via `eat-pass redeem --backend redis://…` and
+  `issuer --rate-backend redis://…` for a multi-replica deployment (fail-closed
+  on backend outage; `SpendError`/`RateLimitError` gained a `Backend` variant).
+  **key rotation end-to-end**: `POST /rotate` (gated by `EATPASS_ADMIN_TOKEN`)
+  mints a new key, appends it to the log, re-signs the head, keeps the old key
+  at `/keys/{version}`; the client verifies cross-rotation consistency with
+  `--kt-known-head`. the token + auth-header **parsers are fuzzed** (libFuzzer in
+  `core/fuzz/` + a deterministic always-on smoke test). issuance batch size
+  (E.9) is documented on `Client::begin` and capped by the issuer rate limit.
+- **m4 — mobile + pages (done).** [`eat-pass-mobile`](mobile/) exposes the client
+  credential math to android (kotlin) + ios (swift) via uniffi (http +
+  attestation stay host-native); github pages site (family style + canon scroll)
+  is live at https://maceip.github.io/eat-pass/.
 
 ### recommended execution order (carried from the review)
 
