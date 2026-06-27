@@ -154,10 +154,12 @@ enum Cmd {
         /// Origin info in the token challenge (must match the client).
         #[arg(long, default_value = "origin.eat-pass.dev")]
         origin_info: String,
-        /// Central redeemer URL for shared double-spend across replicas. If
-        /// unset, double-spend is tracked origin-locally.
+        /// Central redeemer URL (`eat-pass redeem`) — **required**. Double-spend
+        /// is always enforced by the shared central authority; there is no
+        /// origin-local in-memory fallback (which would let a token be spent
+        /// once per replica).
         #[arg(long, value_name = "URL")]
-        redeemer: Option<String>,
+        redeemer: String,
         /// Pin the issuer's key-transparency log public key (64 hex chars,
         /// **required**). The origin only resolves/accepts issuer keys that are
         /// included in the log signed by this key.

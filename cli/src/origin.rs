@@ -4,8 +4,9 @@
 //! no token it answers `401` + `WWW-Authenticate: PrivateToken challenge=…,
 //! token-key=…` (RFC 9577 §2.2) so a client knows exactly what to mint. A
 //! presented token is verified against the issuer key + the challenge this
-//! origin issues, then its nonce is spent once (origin-local double-spend
-//! protection via [`eat_pass_core::spend`]).
+//! origin issues, then its nonce is spent once via the **central redeemer**
+//! (`POST {redeemer}/redeem`) so double-spend is enforced globally across every
+//! origin replica — there is no origin-local fallback.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -18,7 +19,6 @@ use axum::{
     routing::get,
     Router,
 };
-use eat_pass_core::spend::{InMemorySpentStore, SpentStore};
 use eat_pass_core::transparency::verify_log;
 use eat_pass_core::{http, IssuerPublicKey, TokenChallenge, Verifier};
 
@@ -34,7 +34,6 @@ struct OriginState {
     /// Issuer base URL (no trailing slash) — used to resolve historical keys.
     base: String,
     challenge: TokenChallenge,
-    spent: InMemorySpentStore,
     www_authenticate: String,
     /// `token_key_id -> KeyEntry`, seeded with the current key and filled in
     /// lazily as tokens from older (rotated-out) key versions arrive. This is
@@ -45,9 +44,9 @@ struct OriginState {
     /// A key is only ever trusted if it is included in the issuer's
     /// transparency log and that log verifies under this pinned ed25519 key.
     kt_log_pub: [u8; 32],
-    /// When set, double-spend is enforced centrally (shared across replicas)
-    /// via `POST {redeemer}/redeem`; otherwise it is origin-local.
-    redeemer: Option<String>,
+    /// Double-spend is always enforced centrally (shared across replicas) via
+    /// `POST {redeemer}/redeem`. There is no origin-local fallback.
+    redeemer: String,
     http: reqwest::Client,
 }
 
@@ -56,7 +55,7 @@ pub async fn run(
     issuer_url: String,
     issuer_name: String,
     origin_info: String,
-    redeemer: Option<String>,
+    redeemer: String,
     kt_log_pub: [u8; 32],
 ) -> anyhow::Result<()> {
     let base = issuer_url.trim_end_matches('/').to_string();
@@ -90,11 +89,10 @@ pub async fn run(
     let state = Arc::new(OriginState {
         base,
         challenge,
-        spent: InMemorySpentStore::new(),
         www_authenticate,
         keys: RwLock::new(keys),
         kt_log_pub,
-        redeemer: redeemer.map(|r| r.trim_end_matches('/').to_string()),
+        redeemer: redeemer.trim_end_matches('/').to_string(),
         http,
     });
 
@@ -106,10 +104,10 @@ pub async fn run(
         "eat-pass origin: accepting only keys included in the transparency log signed by {}",
         hex::encode(state.kt_log_pub)
     );
-    match &state.redeemer {
-        Some(r) => eprintln!("eat-pass origin: double-spend via central redeemer {r}/redeem"),
-        None => eprintln!("eat-pass origin: double-spend tracked origin-locally"),
-    }
+    eprintln!(
+        "eat-pass origin: double-spend enforced via central redeemer {}/redeem",
+        state.redeemer
+    );
 
     let app = Router::new()
         .route("/resource", get(resource))
@@ -229,10 +227,7 @@ async fn resource(State(state): State<Arc<OriginState>>, headers: HeaderMap) -> 
         }
     };
 
-    let spent_ok = match &state.redeemer {
-        Some(url) => spend_centrally(&state.http, url, entry.epoch, &nonce).await,
-        None => state.spent.check_and_mark(entry.epoch, &nonce).is_ok(),
-    };
+    let spent_ok = spend_centrally(&state.http, &state.redeemer, entry.epoch, &nonce).await;
     if spent_ok {
         (
             StatusCode::OK,

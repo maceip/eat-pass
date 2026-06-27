@@ -64,18 +64,20 @@ export EATPASS_KT_SEED=$(openssl rand -hex 32)
 eat-pass issuer --gate azure --allow <measurement_hex> --class accepted-builds
 #   prints "kt log pubkey <hex>" → clients AND origins MUST pin it.
 
+# redeemer: the central double-spend authority every origin replica shares.
+eat-pass redeem --listen 127.0.0.1:8100
+
 # origin: gates GET /resource on a valid PrivateToken (RFC 9577), trusting only
 #   issuer keys included in the transparency log signed by the pinned key.
-eat-pass origin --issuer http://127.0.0.1:8088 --kt-log-pub <hex>
+#   --redeemer is required: double-spend is always enforced centrally, never
+#   origin-locally (which would let a token be spent once per replica).
+eat-pass origin --issuer http://127.0.0.1:8088 \
+  --redeemer http://127.0.0.1:8100 --kt-log-pub <hex>
 
 # client (inside the attested CVM): collect a real quote, mint a batch, spend one
 eat-pass token --kt-log-pub <hex> \
   --uq-collect "sudo /home/azureuser/unified-quote/target/release/uq azure collect" \
   --count 2 --present http://127.0.0.1:8099/resource
-
-# shared double-spend for horizontally-scaled origins
-eat-pass redeem --listen 127.0.0.1:8100
-eat-pass origin --redeemer http://127.0.0.1:8100 --kt-log-pub <hex>   # every replica
 
 # verify a captured live azure node to the AMD root, through the gate
 eat-pass verify-azure-tls --cert live-leaf.der --binding <value_x_hex>
