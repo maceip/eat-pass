@@ -9,8 +9,15 @@ cd "$root"
 
 cargo build -p eat-pass-mobile
 
-# Locate the freshly-built dynamic library (.dylib on macOS, .so on Linux).
-lib="$(ls target/debug/libeat_pass_mobile.dylib target/debug/libeat_pass_mobile.so 2>/dev/null | head -1)"
+# Locate the freshly-built dynamic library (.dylib macOS / .so linux / .dll win).
+# Checked file-by-file so a missing candidate doesn't trip `set -o pipefail`.
+lib=""
+for cand in \
+  target/debug/libeat_pass_mobile.dylib \
+  target/debug/libeat_pass_mobile.so \
+  target/debug/eat_pass_mobile.dll; do
+  if [ -f "$cand" ]; then lib="$cand"; break; fi
+done
 [ -n "$lib" ] || { echo "error: built cdylib not found under target/debug" >&2; exit 1; }
 echo "using library: $lib"
 
