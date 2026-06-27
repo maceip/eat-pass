@@ -7,21 +7,15 @@
 //! `--present` it immediately spends the first token against an origin.
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
-use eat_pass_core::gate::{DevAttester, Measurement};
 use eat_pass_core::transparency::{verify_consistency, verify_inclusion, verify_log, SignedHead};
 use eat_pass_core::{http, Client, IssuerPublicKey, SignResponse, TokenChallenge};
 
 use crate::wire::{KtResponse, SignBody};
 
 /// How the client produces the attestation evidence (the `eat` bytes) that
-/// commits to the request's channel binding.
+/// commits to the request's channel binding. The only path is a real hardware
+/// attestation — there is no dev/software stand-in in the shipped client.
 pub enum Attest {
-    /// Dev ed25519 statement over the channel binding (no hardware).
-    Dev {
-        seed: [u8; 32],
-        platform: String,
-        value_x: Vec<u8>,
-    },
     /// Real Azure SEV-SNP vTPM bundle: shell out to `uq azure collect
     /// --value-x <channel-binding>` so the AK quote binds the binding. `cmd` is
     /// the collect invocation (argv joined by spaces), e.g.
@@ -32,15 +26,6 @@ pub enum Attest {
 /// Produce the `eat` bytes that bind `binding`, for the chosen attestation mode.
 fn collect_eat(attest: &Attest, binding: &[u8; 32]) -> anyhow::Result<Vec<u8>> {
     match attest {
-        Attest::Dev {
-            seed,
-            platform,
-            value_x,
-        } => {
-            let attester = DevAttester::from_seed(*seed);
-            let measurement = Measurement::new(platform.clone(), value_x.clone());
-            Ok(attester.attest(&measurement, binding))
-        }
         Attest::Azure { cmd } => {
             // `uq azure collect --value-x <hex(binding)> -o <tmp>` — the AK quote
             // commits hex(binding) as qualifyingData, which is exactly the
@@ -88,7 +73,7 @@ pub async fn run(
     issuer_name: String,
     origin_info: String,
     present: Option<String>,
-    kt_log_pub: Option<[u8; 32]>,
+    kt_log_pub: [u8; 32],
     kt_known_head: Option<SignedHead>,
 ) -> anyhow::Result<()> {
     let http_client = reqwest::Client::new();
@@ -110,9 +95,11 @@ pub async fn run(
         hex::encode(tkid)
     );
 
-    // 1b. key transparency (E.4): if the caller pinned a log key, refuse to use
-    //     an issuer key that is not committed in the issuer's published log.
-    if let Some(log_pub) = kt_log_pub {
+    // 1b. key transparency (E.4): always refuse to use an issuer key that is
+    //     not committed in the issuer's published log, signed by the pinned key.
+    //     This is the defense against issuer key-equivocation and is mandatory.
+    let log_pub = kt_log_pub;
+    {
         let kt: KtResponse = http_client
             .get(format!("{base}/kt"))
             .send()

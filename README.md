@@ -50,54 +50,40 @@ tokens any origin can verify with nothing but a public key.
 
 ## use it
 
-the `eat-pass` binary is issuer, client, and origin in one. the whole flow runs
-in-process with no network:
+the `eat-pass` binary is issuer, client, origin, and redeemer in one. **there is
+no dev/insecure mode**: issuance is always gated on a real hardware attestation
+and key-transparency is mandatory — there are no flags to weaken either. the
+client runs inside the attested CVM and collects a genuine SEV-SNP vTPM quote
+bound to each request.
 
 ```bash
-cargo run -p eat-pass-cli --bin eat-pass -- demo
-```
+# issuer: publishes its key, gates /sign on a real attestation backend
+#   (uq = unified-quote CBOR EAT | azure = SEV-SNP vTPM bundle | azure-tls).
+#   EATPASS_KT_SEED is the stable transparency-log seed clients pin (required).
+export EATPASS_KT_SEED=$(openssl rand -hex 32)
+eat-pass issuer --gate azure --allow <measurement_hex> --class accepted-builds
+#   prints "kt log pubkey <hex>" → clients AND origins MUST pin it.
 
-or wire the three roles over http:
+# origin: gates GET /resource on a valid PrivateToken (RFC 9577), trusting only
+#   issuer keys included in the transparency log signed by the pinned key.
+eat-pass origin --issuer http://127.0.0.1:8088 --kt-log-pub <hex>
 
-```bash
-# 1. a dev attester identity (stands in for a TEE producing a unified-quote eat)
-eat-pass attester-key
-#   seed          <hex>   → give to the client
-#   verifying-key <hex>   → give to the issuer
-
-# 2. issuer: publishes its key, gates /sign on an accepted measurement class
-eat-pass issuer --attester-key <vk> --allow <value_x_hex> --class accepted-builds
-
-# 3. origin: gates GET /resource on a valid PrivateToken (RFC 9577)
-eat-pass origin --issuer http://127.0.0.1:8088
-
-# 4. client: mint a batch, then spend one against the origin
-eat-pass token --attester-seed <seed> --value-x <value_x_hex> \
+# client (inside the attested CVM): collect a real quote, mint a batch, spend one
+eat-pass token --kt-log-pub <hex> \
+  --uq-collect "sudo /home/azureuser/unified-quote/target/release/uq azure collect" \
   --count 2 --present http://127.0.0.1:8099/resource
-```
-
-an unauthenticated request gets `401` + `WWW-Authenticate: PrivateToken
-challenge=…, token-key=…`; a request carrying a finalized token gets `200`, and
-a replay of the same token is rejected as a double-spend.
-
-### real attestation (m2)
-
-gate issuance on a genuine hardware quote instead of the dev attester, verify a
-live azure sev-snp node, pin the key log, and share double-spend across replicas:
-
-```bash
-# verify the live azure attested-TLS node to the AMD root, through the gate
-eat-pass verify-azure-tls --cert live-leaf.der --binding <value_x_hex>
-
-# issuer gating on a real attestation backend (cbor eat | azure bundle | azure-tls)
-eat-pass issuer --gate uq        --allow <measurement_hex> --class accepted-builds
-#   prints "kt log pubkey <hex>" → clients pin it:
-eat-pass token  --kt-log-pub <hex> --attester-seed <seed> --value-x <hex>
 
 # shared double-spend for horizontally-scaled origins
 eat-pass redeem --listen 127.0.0.1:8100
-eat-pass origin --redeemer http://127.0.0.1:8100   # every replica points here
+eat-pass origin --redeemer http://127.0.0.1:8100 --kt-log-pub <hex>   # every replica
+
+# verify a captured live azure node to the AMD root, through the gate
+eat-pass verify-azure-tls --cert live-leaf.der --binding <value_x_hex>
 ```
+
+> the full protocol can be exercised without TEE hardware **in tests only** via
+> `cargo test -p eat-pass-cli --features dev-sim`; the dev-sim attestation
+> stand-ins are compiled out of every shipped binary.
 
 ## status
 
@@ -112,11 +98,12 @@ eat-pass origin --redeemer http://127.0.0.1:8100   # every replica points here
   genuine [unified-quote](https://github.com/maceip/unified-quote) attestation
   (`UqVerifier` for the cbor eat; `AzureUqVerifier` / `AzureTlsVerifier` for the
   azure sev-snp vtpm path) to the **AMD/Intel hardware root** and extracts the
-  gated measurement; the issuer selects it with `--gate dev|uq|azure|azure-tls`.
-  verified end-to-end against the live `attest.secure.build` sev-snp node
-  (`eat-pass verify-azure-tls`). plus **key transparency** — the issuer publishes
-  a signed, append-only key log at `/kt` and the client pins it with
-  `--kt-log-pub` (inclusion + consistency checks), and a **central redeemer**
+  gated measurement; the issuer selects it with `--gate uq|azure|azure-tls`
+  (there is no dev/software gate). verified end-to-end against the live
+  `attest.secure.build` sev-snp node (`eat-pass verify-azure-tls`). plus
+  **mandatory key transparency** — the issuer publishes a signed, append-only
+  key log at `/kt` and both the client and origin pin it with `--kt-log-pub`
+  (inclusion + consistency checks; not optional), and a **central redeemer**
   (`eat-pass redeem` + `origin --redeemer`) for shared cross-replica
   double-spend. (gcp/tdx node still blocked; the tdx verifier path is compiled
   and ready.)

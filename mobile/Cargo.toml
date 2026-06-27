@@ -27,5 +27,11 @@ serde_json = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }
 
+# Tests exercise the FFI surface end-to-end with the dev-sim attestation
+# stand-ins. dev-dependency features apply only to the test build, so the
+# shipped cdylib never includes them.
+[dev-dependencies]
+eat-pass-core = { path = "../core", features = ["dev-sim"] }
+
 [features]
 cli = ["uniffi/cli"]

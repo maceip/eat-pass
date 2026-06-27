@@ -2,6 +2,10 @@
 //! through the gate → finalize → present (RFC 9577 header) → spend → reject
 //! replay. Uses small keys for speed; the demo path also JSON-roundtrips the
 //! `/sign` envelope so the wire format is exercised.
+//!
+//! Compiled only under `--features dev-sim` (the demo uses the dev attestation
+//! stand-ins). Empty in a default build.
+#![cfg(feature = "dev-sim")]
 
 use eat_pass_cli::demo;
 

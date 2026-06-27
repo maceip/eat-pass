@@ -29,8 +29,15 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
       - name: build
         run: cargo build --workspace --all-targets
-      - name: test
+      - name: clippy (shipped surface, no insecure paths)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+        if: matrix.os == 'ubuntu-latest'
+      - name: test (shipped surface)
         run: cargo test --workspace
+      # Protocol end-to-end coverage runs the dev-sim attestation stand-ins,
+      # which are compiled ONLY here — never in the shipped binary.
+      - name: test (dev-sim protocol e2e)
+        run: cargo test -p eat-pass-core -p eat-pass-cli --features dev-sim
 
   # Exercises the optional networked shared-state backend (m3) against a real
   # Redis. Kept off the default matrix so the credential build stays pure-Rust

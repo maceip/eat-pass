@@ -3,6 +3,9 @@
 //! binary ([`main.rs`](../bin/eat-pass)) is a thin clap wrapper over these.
 
 pub mod client;
+/// In-process protocol demo. Test/CI only (uses the dev-sim attestation
+/// stand-ins); never compiled into the shipped binary.
+#[cfg(feature = "dev-sim")]
 pub mod demo;
 pub mod issuer;
 pub mod origin;

@@ -1,3 +1,7 @@
+// Exercises the full protocol without a TEE via the dev-sim attestation
+// stand-ins, which are compiled only under this feature. Empty otherwise.
+#![cfg(feature = "dev-sim")]
+
 use eat_pass_core::gate::{
     issue_gated, issue_gated_with_limit, DevAttester, DevVerifier, GateError, Measurement,
     MeasurementClass,

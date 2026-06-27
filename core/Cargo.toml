@@ -11,6 +11,13 @@ authors.workspace = true
 name = "eat_pass_core"
 path = "src/lib.rs"
 
+[features]
+# Dev/test-only attestation stand-ins (ed25519 `DevAttester`/`DevVerifier`).
+# OFF by default and never compiled into shipped binaries: there is no runtime
+# switch to gate issuance on anything but a real hardware attestation. Tests
+# that exercise the protocol without a TEE enable this explicitly.
+dev-sim = []
+
 [dependencies]
 blind-rsa-signatures = "0.17"
 ed25519-dalek = "2"

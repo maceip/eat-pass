@@ -37,3 +37,7 @@ r2d2 = { version = "0.8", optional = true }
 # by default so the credential build stays pure-Rust and cross-platform; the
 # `redis` CI job builds + tests with it against a service container.
 redis = ["dep:redis", "dep:r2d2", "redis/r2d2", "redis/script"]
+# Dev/test-only: compiles the in-process `demo` module + the e2e protocol test,
+# which use the dev-sim attestation stand-ins. OFF by default and never in the
+# shipped `eat-pass` binary — there is no insecure runtime path.
+dev-sim = ["eat-pass-core/dev-sim"]

@@ -25,7 +25,7 @@ use axum::{
 };
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use eat_pass_core::gate::{
-    issue_gated_with_limit, AttestationVerifier, ClassGated, DevVerifier, GateError, Measurement,
+    issue_gated_with_limit, AttestationVerifier, ClassGated, GateError, Measurement,
     MeasurementClass,
 };
 use eat_pass_core::transparency::{KeyLog, LogSigner, SignedHead};
@@ -36,10 +36,9 @@ use tokio::sync::RwLock;
 use crate::store::LimitBackend;
 use crate::wire::{ErrorBody, KtResponse, RotateResponse, SignBody};
 
-/// Which attestation backend gates issuance.
+/// Which attestation backend gates issuance. Every variant verifies a genuine
+/// hardware attestation to an AMD/Intel root — there is no software/dev gate.
 pub enum Gate {
-    /// Dev ed25519 statements (`DevVerifier`) — no TEE needed, for local/CI.
-    Dev(DevVerifier),
     /// Real unified-quote CBOR EAT verification (`UqVerifier`), class-gated.
     Uq(ClassGated<UqVerifier>),
     /// Azure SEV-SNP vTPM bundle (`value_x` = channel binding), class-gated.
@@ -51,7 +50,6 @@ pub enum Gate {
 impl AttestationVerifier for Gate {
     fn verify(&self, eat: &[u8], expected_binding: &[u8; 32]) -> Result<Measurement, GateError> {
         match self {
-            Gate::Dev(v) => v.verify(eat, expected_binding),
             Gate::Uq(v) => v.verify(eat, expected_binding),
             Gate::Azure(v) => v.verify(eat, expected_binding),
             Gate::AzureTls(v) => v.verify(eat, expected_binding),
@@ -85,8 +83,6 @@ struct IssuerState {
 
 /// Issuance gate backend selected on the command line.
 pub enum Backend {
-    /// `--gate dev`: trust a dev attester verifying key (no TEE needed).
-    Dev { attester_key: [u8; 32] },
     /// `--gate uq`: verify a real unified-quote CBOR EAT.
     Uq,
     /// `--gate azure`: verify an Azure SEV-SNP vTPM bundle (value_x bound).
@@ -114,15 +110,6 @@ pub async fn run(
 
     let class = MeasurementClass::new(class_name.clone(), class_version, allow.clone());
     let verifier = match backend {
-        Backend::Dev { attester_key } => {
-            let v = DevVerifier::new_for_class(attester_key, class)
-                .map_err(|e| anyhow::anyhow!("verifier: {e}"))?;
-            eprintln!(
-                "  gate           dev (attester key {})",
-                hex::encode(attester_key)
-            );
-            Gate::Dev(v)
-        }
         Backend::Uq => {
             eprintln!("  gate           uq (unified-quote CBOR EAT verification)");
             Gate::Uq(ClassGated::new(UqVerifier::new(), class))
@@ -147,7 +134,7 @@ pub async fn run(
     // clients can pin the *log* key and refuse any issuer key not committed here.
     // The log seed is deterministic-from-env or random per process; in prod the
     // operator persists it so the log spans process restarts and rotations.
-    let log_seed = kt_seed_from_env();
+    let log_seed = kt_seed_from_env()?;
     let log_signer = LogSigner::from_seed(log_seed);
     let mut key_log = KeyLog::new();
     let now = unix_now();
@@ -218,19 +205,21 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
-/// Key-log signing seed: hex in `EATPASS_KT_SEED` (64 chars), else random.
-fn kt_seed_from_env() -> [u8; 32] {
-    if let Ok(h) = std::env::var("EATPASS_KT_SEED") {
-        if let Ok(b) = hex::decode(h.trim()) {
-            if let Ok(arr) = <[u8; 32]>::try_from(b.as_slice()) {
-                return arr;
-            }
-        }
-        eprintln!("[issuer] WARNING: EATPASS_KT_SEED not 32-byte hex; using random log key");
-    }
-    let mut s = [0u8; 32];
-    let _ = getrandom::getrandom(&mut s);
-    s
+/// Key-log signing seed: 64 hex chars in `EATPASS_KT_SEED`. **Required** — the
+/// log key must be stable across restarts and rotations because clients pin it,
+/// so there is no random fallback (a fresh key each boot would silently break
+/// the consistency guarantee clients rely on).
+fn kt_seed_from_env() -> anyhow::Result<[u8; 32]> {
+    let h = std::env::var("EATPASS_KT_SEED").map_err(|_| {
+        anyhow::anyhow!(
+            "EATPASS_KT_SEED is required (64 hex chars): it is the stable \
+             key-transparency log signing seed that clients pin. Generate one with \
+             `openssl rand -hex 32` and persist it across restarts."
+        )
+    })?;
+    let b = hex::decode(h.trim()).map_err(|e| anyhow::anyhow!("EATPASS_KT_SEED bad hex: {e}"))?;
+    <[u8; 32]>::try_from(b.as_slice())
+        .map_err(|_| anyhow::anyhow!("EATPASS_KT_SEED must be exactly 32 bytes (64 hex chars)"))
 }
 
 async fn keys(State(state): State<Arc<IssuerState>>) -> Json<IssuerPublicKey> {

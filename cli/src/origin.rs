@@ -7,8 +7,9 @@
 //! origin issues, then its nonce is spent once (origin-local double-spend
 //! protection via [`eat_pass_core::spend`]).
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use axum::{
     extract::State,
@@ -18,16 +19,32 @@ use axum::{
     Router,
 };
 use eat_pass_core::spend::{InMemorySpentStore, SpentStore};
+use eat_pass_core::transparency::verify_log;
 use eat_pass_core::{http, IssuerPublicKey, TokenChallenge, Verifier};
 
-use crate::wire::RedeemBody;
+use crate::wire::{KtResponse, RedeemBody};
+
+/// A verifier for one issuer key version, plus the epoch its spends bucket into.
+struct KeyEntry {
+    verifier: Verifier,
+    epoch: u32,
+}
 
 struct OriginState {
-    verifier: Verifier,
+    /// Issuer base URL (no trailing slash) — used to resolve historical keys.
+    base: String,
     challenge: TokenChallenge,
-    key_epoch: u32,
     spent: InMemorySpentStore,
     www_authenticate: String,
+    /// `token_key_id -> KeyEntry`, seeded with the current key and filled in
+    /// lazily as tokens from older (rotated-out) key versions arrive. This is
+    /// what closes the rotation gap: a token minted under v1 is still accepted
+    /// after the issuer rotates to v2, instead of being rejected because the
+    /// origin pinned exactly one key at startup.
+    keys: RwLock<HashMap<[u8; 32], Arc<KeyEntry>>>,
+    /// A key is only ever trusted if it is included in the issuer's
+    /// transparency log and that log verifies under this pinned ed25519 key.
+    kt_log_pub: [u8; 32],
     /// When set, double-spend is enforced centrally (shared across replicas)
     /// via `POST {redeemer}/redeem`; otherwise it is origin-local.
     redeemer: Option<String>,
@@ -40,36 +57,54 @@ pub async fn run(
     issuer_name: String,
     origin_info: String,
     redeemer: Option<String>,
+    kt_log_pub: [u8; 32],
 ) -> anyhow::Result<()> {
-    // Fetch + pin the issuer key this origin will accept tokens from.
-    let keys_url = format!("{}/keys", issuer_url.trim_end_matches('/'));
-    let pk: IssuerPublicKey = reqwest::Client::new()
-        .get(&keys_url)
+    let base = issuer_url.trim_end_matches('/').to_string();
+    let http = reqwest::Client::new();
+
+    // Fetch the *current* issuer key — this is the one we advertise to new
+    // clients via WWW-Authenticate. Older versions are resolved on demand.
+    let pk: IssuerPublicKey = http
+        .get(format!("{base}/keys"))
         .send()
         .await?
         .error_for_status()?
         .json()
         .await?;
-    let key_epoch = pk.key_version;
-    let tkid = pk.token_key_id()?;
+    let cur_epoch = pk.key_version;
+    let cur_tkid = pk.token_key_id()?;
 
     let challenge = TokenChallenge::new(issuer_name, origin_info);
     let www_authenticate = http::www_authenticate(&challenge.to_bytes(), &pk)
         .map_err(|e| anyhow::anyhow!("www-authenticate: {e}"))?;
 
+    let mut keys = HashMap::new();
+    keys.insert(
+        cur_tkid,
+        Arc::new(KeyEntry {
+            verifier: Verifier::new(pk),
+            epoch: cur_epoch,
+        }),
+    );
+
     let state = Arc::new(OriginState {
-        verifier: Verifier::new(pk),
+        base,
         challenge,
-        key_epoch,
         spent: InMemorySpentStore::new(),
         www_authenticate,
+        keys: RwLock::new(keys),
+        kt_log_pub,
         redeemer: redeemer.map(|r| r.trim_end_matches('/').to_string()),
-        http: reqwest::Client::new(),
+        http,
     });
 
     eprintln!(
-        "eat-pass origin: pinned issuer key v{key_epoch} token_key_id={}",
-        hex::encode(tkid)
+        "eat-pass origin: advertising current issuer key v{cur_epoch} token_key_id={}",
+        hex::encode(cur_tkid)
+    );
+    eprintln!(
+        "eat-pass origin: accepting only keys included in the transparency log signed by {}",
+        hex::encode(state.kt_log_pub)
     );
     match &state.redeemer {
         Some(r) => eprintln!("eat-pass origin: double-spend via central redeemer {r}/redeem"),
@@ -86,6 +121,87 @@ pub async fn run(
     Ok(())
 }
 
+/// Return the [`KeyEntry`] for a token's `token_key_id`, resolving and caching
+/// it from the issuer's transparency log + `/keys/{version}` on a cache miss.
+/// `None` means the key is genuinely not one this origin will accept (absent
+/// from the log, or fails the pinned-log check).
+async fn key_for(state: &Arc<OriginState>, tkid: &[u8; 32]) -> Option<Arc<KeyEntry>> {
+    if let Some(e) = state.keys.read().unwrap().get(tkid).cloned() {
+        return Some(e);
+    }
+    match resolve_via_kt(state, tkid).await {
+        Ok(Some(entry)) => {
+            state.keys.write().unwrap().insert(*tkid, entry.clone());
+            Some(entry)
+        }
+        Ok(None) => None,
+        Err(e) => {
+            eprintln!(
+                "eat-pass origin: could not resolve key {}: {e}",
+                hex::encode(tkid)
+            );
+            None
+        }
+    }
+}
+
+/// Map an unknown `token_key_id` to its key version via the issuer's `/kt` log
+/// (optionally verifying the log under a pinned key), then fetch and validate
+/// that key from `/keys/{version}`.
+async fn resolve_via_kt(
+    state: &Arc<OriginState>,
+    tkid: &[u8; 32],
+) -> anyhow::Result<Option<Arc<KeyEntry>>> {
+    let kt: KtResponse = state
+        .http
+        .get(format!("{}/kt", state.base))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+
+    let pin = state.kt_log_pub;
+    let served = hex::decode(kt.log_pub.trim()).unwrap_or_default();
+    if served.as_slice() != pin {
+        anyhow::bail!(
+            "kt log pubkey {} does not match the pinned key {}",
+            kt.log_pub,
+            hex::encode(pin)
+        );
+    }
+    verify_log(&pin, &kt.records, &kt.signed_head)
+        .map_err(|e| anyhow::anyhow!("kt log does not verify under pinned key: {e}"))?;
+
+    let want = hex::encode(tkid);
+    let Some(rec) = kt
+        .records
+        .iter()
+        .find(|r| r.token_key_id.eq_ignore_ascii_case(&want))
+    else {
+        return Ok(None);
+    };
+    let version = rec.key_version;
+
+    let pk: IssuerPublicKey = state
+        .http
+        .get(format!("{}/keys/{version}", state.base))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let epoch = pk.key_version;
+    if pk.token_key_id()? != *tkid {
+        anyhow::bail!("/keys/{version} token_key_id disagrees with the transparency log");
+    }
+    eprintln!("eat-pass origin: resolved rotated-out key v{epoch} token_key_id={want}");
+    Ok(Some(Arc::new(KeyEntry {
+        verifier: Verifier::new(pk),
+        epoch,
+    })))
+}
+
 async fn resource(State(state): State<Arc<OriginState>>, headers: HeaderMap) -> impl IntoResponse {
     let Some(auth) = headers.get("authorization").and_then(|v| v.to_str().ok()) else {
         return challenge_response(&state);
@@ -96,7 +212,17 @@ async fn resource(State(state): State<Arc<OriginState>>, headers: HeaderMap) -> 
         Err(_) => return challenge_response(&state),
     };
 
-    let nonce = match state.verifier.verify(&token, &state.challenge) {
+    // Resolve the key this token was signed under (current or a rotated-out
+    // version), so rotation never invalidates already-minted tokens.
+    let Some(entry) = key_for(&state, &token.token_key_id).await else {
+        return (
+            StatusCode::FORBIDDEN,
+            "token signed by an unknown or unaccepted issuer key\n".to_string(),
+        )
+            .into_response();
+    };
+
+    let nonce = match entry.verifier.verify(&token, &state.challenge) {
         Ok(n) => n,
         Err(e) => {
             return (StatusCode::FORBIDDEN, format!("token rejected: {e}\n")).into_response();
@@ -104,8 +230,8 @@ async fn resource(State(state): State<Arc<OriginState>>, headers: HeaderMap) -> 
     };
 
     let spent_ok = match &state.redeemer {
-        Some(url) => spend_centrally(&state.http, url, state.key_epoch, &nonce).await,
-        None => state.spent.check_and_mark(state.key_epoch, &nonce).is_ok(),
+        Some(url) => spend_centrally(&state.http, url, entry.epoch, &nonce).await,
+        None => state.spent.check_and_mark(entry.epoch, &nonce).is_ok(),
     };
     if spent_ok {
         (

@@ -1,21 +1,21 @@
 //! eat-pass — attestation-gated, unlinkable authorization tokens.
 //!
-//! One binary, four roles:
-//! - `demo`          run the whole flow in-process (no network).
-//! - `attester-key`  generate a dev attester identity (seed + verifying key).
+//! One binary, the network roles:
 //! - `issuer`        serve `GET /keys` + gated `POST /sign`.
 //! - `token`         client: mint tokens against an issuer (and optionally spend one).
 //! - `origin`        example resource server gated on a `PrivateToken`.
+//! - `redeem`        central double-spend authority shared by origins.
 //!
 //! The credential is an RFC 9474 blind-RSA signature in the RFC 9578 token type
-//! `0x0002` format; issuance is gated on attestation (a unified-quote eat in
-//! production, a dev ed25519 statement here). See `eat-pass-core`.
+//! `0x0002` format. **Issuance is always gated on a real hardware attestation**
+//! (a `unified-quote` EAT / Azure SEV-SNP bundle); there is no dev/insecure gate
+//! and no flag to disable attestation or key-transparency. See `eat-pass-core`.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use eat_pass_cli::{client, demo, issuer, origin, redeemer};
+use eat_pass_cli::{client, issuer, origin, redeemer};
 
 #[derive(Parser)]
 #[command(
@@ -30,33 +30,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Run issuer→client→origin end-to-end in one process (no network).
-    Demo {
-        /// RSA modulus bits for the demo issuer key (small = fast).
-        #[arg(long, default_value_t = 2048)]
-        modulus_bits: usize,
-        /// Number of tokens to mint in the batch.
-        #[arg(long, default_value_t = 3)]
-        count: usize,
-    },
-
-    /// Generate a dev attester identity: prints `seed` (give to `token`) and
-    /// `verifying-key` (give to `issuer --attester-key`).
-    AttesterKey,
-
     /// Serve the issuance API: `GET /keys`, gated `POST /sign`.
     Issuer {
         #[arg(long, default_value = "127.0.0.1:8088")]
         listen: SocketAddr,
-        /// Attestation backend: `dev` (ed25519 dev statements), `uq`
-        /// (unified-quote CBOR EAT), `azure` (SEV-SNP vTPM bundle), or
-        /// `azure-tls` (attested-TLS leaf cert, the live Azure node's shape).
-        #[arg(long, default_value = "dev")]
-        gate: String,
-        /// Trusted dev attester verifying key (64 hex chars). Required for
-        /// `--gate dev`; ignored for `--gate uq`.
+        /// Attestation backend (required): `uq` (unified-quote CBOR EAT),
+        /// `azure` (SEV-SNP vTPM bundle), or `azure-tls` (attested-TLS leaf
+        /// cert, the live Azure node's shape). Every option verifies a genuine
+        /// hardware attestation to an AMD/Intel root — there is no dev gate.
         #[arg(long)]
-        attester_key: Option<String>,
+        gate: String,
         /// An accepted measurement `value_x` (hex). Repeatable.
         #[arg(long = "allow", value_name = "HEX")]
         allow: Vec<String>,
@@ -82,28 +65,14 @@ enum Cmd {
         rate_backend: Option<String>,
     },
 
-    /// Client: mint tokens against a running issuer.
+    /// Client: mint tokens against a running issuer. Runs inside the attested
+    /// CVM; collects a real SEV-SNP vTPM attestation bound to the request.
     Token {
         #[arg(long, default_value = "http://127.0.0.1:8088")]
         issuer: String,
-        /// Attestation mode: `dev` (ed25519 statement) or `azure` (real SEV-SNP
-        /// vTPM bundle via `uq azure collect`, for an in-CVM client).
-        #[arg(long, default_value = "dev")]
-        attest: String,
-        /// Dev attester seed (64 hex chars) from `attester-key`. Required for
-        /// `--attest dev`.
-        #[arg(long)]
-        attester_seed: Option<String>,
-        /// Platform label for the dev attestation.
-        #[arg(long, default_value = "dev")]
-        platform: String,
-        /// The build measurement `value_x` (hex) for `--attest dev` — must be in
-        /// the issuer's class. Ignored for `--attest azure` (the measurement
-        /// comes from hardware).
-        #[arg(long, default_value = "")]
-        value_x: String,
-        /// `uq azure collect` invocation for `--attest azure` (argv, joined by
-        /// spaces). Needs vTPM access, so typically prefixed with `sudo`.
+        /// `uq azure collect` invocation (argv, joined by spaces). Collects a
+        /// real SEV-SNP vTPM bundle whose AK quote binds this request's channel
+        /// binding. Needs vTPM access, so typically prefixed with `sudo`.
         #[arg(
             long,
             default_value = "sudo /home/azureuser/unified-quote/target/release/uq azure collect"
@@ -121,15 +90,16 @@ enum Cmd {
         /// If set, immediately present the first token to this origin URL.
         #[arg(long, value_name = "URL")]
         present: Option<String>,
-        /// Pin the issuer's key-transparency log public key (64 hex chars). When
-        /// set, the client fetches `/kt` and refuses to use an issuer key that
-        /// is not committed in the signed log.
+        /// Pin the issuer's key-transparency log public key (64 hex chars,
+        /// **required**). The client fetches `/kt` and refuses to use an issuer
+        /// key that is not committed in the signed log — the defense against an
+        /// issuer that equivocates on its key to deanonymize a client.
         #[arg(long)]
-        kt_log_pub: Option<String>,
+        kt_log_pub: String,
         /// A previously-observed signed head as `<seq>:<head-hex>` (printed as
-        /// `kt-head` by an earlier run). When set with --kt-log-pub, the client
-        /// requires the current log to be a consistent *append* to it — proving
-        /// a rotation didn't rewrite history.
+        /// `kt-head` by an earlier run). When set, the client requires the
+        /// current log to be a consistent *append* to it — proving a rotation
+        /// didn't rewrite history.
         #[arg(long)]
         kt_known_head: Option<String>,
     },
@@ -188,6 +158,11 @@ enum Cmd {
         /// unset, double-spend is tracked origin-locally.
         #[arg(long, value_name = "URL")]
         redeemer: Option<String>,
+        /// Pin the issuer's key-transparency log public key (64 hex chars,
+        /// **required**). The origin only resolves/accepts issuer keys that are
+        /// included in the log signed by this key.
+        #[arg(long)]
+        kt_log_pub: String,
     },
 
     /// Central double-spend authority: `POST /redeem` shared by origin replicas.
@@ -235,28 +210,9 @@ fn parse_known_head(s: &str) -> anyhow::Result<eat_pass_core::transparency::Sign
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     match Cli::parse().cmd {
-        Cmd::Demo {
-            modulus_bits,
-            count,
-        } => {
-            demo::run_in_process(modulus_bits, count)?;
-        }
-
-        Cmd::AttesterKey => {
-            // A dev attester is fully determined by its 32-byte seed. The seed is
-            // the private attester identity (treat it like a secret); the
-            // verifying key is what an issuer pins via `--attester-key`.
-            let mut seed = [0u8; 32];
-            getrandom::getrandom(&mut seed).map_err(|e| anyhow::anyhow!("rng: {e}"))?;
-            let vk = eat_pass_core::gate::DevAttester::from_seed(seed).verifying_key();
-            println!("seed          {}", hex::encode(seed));
-            println!("verifying-key {}", hex::encode(vk));
-        }
-
         Cmd::Issuer {
             listen,
             gate,
-            attester_key,
             allow,
             class,
             class_version,
@@ -266,18 +222,11 @@ async fn main() -> anyhow::Result<()> {
             rate_backend,
         } => {
             let backend = match gate.as_str() {
-                "dev" => {
-                    let key = attester_key
-                        .ok_or_else(|| anyhow::anyhow!("--gate dev requires --attester-key"))?;
-                    issuer::Backend::Dev {
-                        attester_key: parse_hex32(&key, "attester-key")?,
-                    }
-                }
                 "uq" => issuer::Backend::Uq,
                 "azure" => issuer::Backend::Azure,
                 "azure-tls" => issuer::Backend::AzureTls,
                 other => anyhow::bail!(
-                    "unknown --gate '{other}' (expected 'dev', 'uq', 'azure', or 'azure-tls')"
+                    "unknown --gate '{other}' (expected 'uq', 'azure', or 'azure-tls')"
                 ),
             };
             let allow = allow
@@ -303,10 +252,6 @@ async fn main() -> anyhow::Result<()> {
 
         Cmd::Token {
             issuer,
-            attest,
-            attester_seed,
-            platform,
-            value_x,
             uq_collect,
             count,
             issuer_name,
@@ -315,24 +260,8 @@ async fn main() -> anyhow::Result<()> {
             kt_log_pub,
             kt_known_head,
         } => {
-            let attest = match attest.as_str() {
-                "dev" => {
-                    let seed = attester_seed
-                        .ok_or_else(|| anyhow::anyhow!("--attest dev requires --attester-seed"))?;
-                    let value_x = hex::decode(value_x.trim())
-                        .map_err(|e| anyhow::anyhow!("value-x: bad hex: {e}"))?;
-                    client::Attest::Dev {
-                        seed: parse_hex32(&seed, "attester-seed")?,
-                        platform,
-                        value_x,
-                    }
-                }
-                "azure" => client::Attest::Azure { cmd: uq_collect },
-                other => anyhow::bail!("unknown --attest '{other}' (expected 'dev' or 'azure')"),
-            };
-            let kt_log_pub = kt_log_pub
-                .map(|h| parse_hex32(&h, "kt-log-pub"))
-                .transpose()?;
+            let attest = client::Attest::Azure { cmd: uq_collect };
+            let kt_log_pub = parse_hex32(&kt_log_pub, "kt-log-pub")?;
             let kt_known_head = kt_known_head.map(|s| parse_known_head(&s)).transpose()?;
             client::run(
                 issuer,
@@ -409,8 +338,18 @@ async fn main() -> anyhow::Result<()> {
             issuer_name,
             origin_info,
             redeemer,
+            kt_log_pub,
         } => {
-            origin::run(listen, issuer, issuer_name, origin_info, redeemer).await?;
+            let kt_log_pub = parse_hex32(&kt_log_pub, "kt-log-pub")?;
+            origin::run(
+                listen,
+                issuer,
+                issuer_name,
+                origin_info,
+                redeemer,
+                kt_log_pub,
+            )
+            .await?;
         }
 
         Cmd::Redeem {
