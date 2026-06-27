@@ -1,0 +1,9 @@
+/target
+**/target
+*.swp
+*.swo
+.env
+# issuer private keys — never commit
+*.pem
+*.key
+issuer-*.json
