@@ -1,0 +1,31 @@
+[package]
+name = "eat-pass-mobile"
+version = "0.1.0"
+description = "eat-pass client crypto exposed to Android (Kotlin) and iOS (Swift) via UniFFI"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+name = "eat_pass_mobile"
+# cdylib: the .so/.dylib the JVM/Swift load at runtime; staticlib: iOS device
+# linking; lib: so Rust integration tests can exercise the exported surface.
+crate-type = ["cdylib", "staticlib", "lib"]
+
+# A library-mode bindgen entrypoint (`uniffi-bindgen generate --library …`).
+# Behind the `cli` feature so the default build/CI matrix doesn't pull clap.
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["cli"]
+
+[dependencies]
+eat-pass-core = { path = "../core" }
+uniffi = "0.28"
+serde_json = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+
+[features]
+cli = ["uniffi/cli"]

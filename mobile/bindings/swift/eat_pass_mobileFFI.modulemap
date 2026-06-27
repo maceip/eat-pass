@@ -1,0 +1,4 @@
+module eat_pass_mobileFFI {
+    header "eat_pass_mobileFFI.h"
+    export *
+}

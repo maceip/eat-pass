@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core", "cli", "gate"]
+members = ["core", "cli", "gate", "mobile"]
 # The libFuzzer harness needs a nightly toolchain; keep it out of the default
 # build and the CI matrix. Run on demand: `cargo +nightly fuzz run <target>`.
 exclude = ["core/fuzz"]
