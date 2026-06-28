@@ -1,8 +1,7 @@
 name: release
 
-# Every push to main cuts a tagged release with cross-platform `eat-pass`
-# binaries. The credential is pure Rust (blind-rsa + ed25519 + axum/reqwest with
-# rustls), so the issuer/client/origin binary builds and runs everywhere.
+# PoMFRIT spend tokens require Linux x86_64 native builds. Release ships the
+# eat-pass binary for that target (Azure CVM / Linux agent deployment).
 
 on:
   push:
@@ -11,6 +10,11 @@ on:
       - "core/**"
       - "cli/**"
       - "gate/**"
+      - "policy/**"
+      - "pomfrit/**"
+      - "mobile/**"
+      - "scripts/**"
+      - "third_party/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/release.yml"
@@ -25,51 +29,40 @@ concurrency:
 
 jobs:
   build:
-    name: ${{ matrix.target }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-          - os: macos-14
-            target: aarch64-apple-darwin
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
+    name: x86_64-unknown-linux-gnu
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install PoMFRIT toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-14 g++-14 build-essential pipx git
+          pipx install meson ninja
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build PoMFRIT native dependencies
+        run: bash scripts/build-pomfrit-deps.sh
 
       - name: Install Rust target
-        run: rustup target add ${{ matrix.target }}
+        run: rustup target add x86_64-unknown-linux-gnu
 
       - name: Build eat-pass
-        run: cargo build --release -p eat-pass-cli --bin eat-pass --target ${{ matrix.target }}
+        run: cargo build --release -p eat-pass-cli --bin eat-pass --target x86_64-unknown-linux-gnu
 
-      - name: Stage (unix)
-        if: runner.os != 'Windows'
-        shell: bash
+      - name: Stage
         run: |
           set -euo pipefail
           mkdir -p dist
-          out="eat-pass-${{ matrix.target }}"
-          cp "target/${{ matrix.target }}/release/eat-pass" "dist/$out"
+          out="eat-pass-x86_64-unknown-linux-gnu"
+          cp "target/x86_64-unknown-linux-gnu/release/eat-pass" "dist/$out"
           ( cd dist && shasum -a 256 "$out" > "$out.sha256" )
-
-      - name: Stage (windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory dist -Force | Out-Null
-          $out = "eat-pass-${{ matrix.target }}.exe"
-          Copy-Item "target/${{ matrix.target }}/release/eat-pass.exe" "dist/$out"
-          (Get-FileHash "dist/$out" -Algorithm SHA256).Hash.ToLower() + "  $out" | Set-Content "dist/$out.sha256"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: eat-pass-${{ matrix.target }}
+          name: eat-pass-x86_64-unknown-linux-gnu
           path: dist/*
           if-no-files-found: error
 

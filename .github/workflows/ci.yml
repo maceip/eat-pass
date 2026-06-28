@@ -1,7 +1,7 @@
 name: ci
 
-# Build + test the workspace on linux/macos/windows. The credential is pure
-# Rust (blind-rsa + ed25519 + getrandom), so it must be green everywhere.
+# PoMFRIT native deps (MAYO + VOLE-in-the-head) build on Linux x86_64 only.
+# FAEST is pure Rust. Full workspace CI runs on ubuntu-latest.
 
 on:
   push:
@@ -16,32 +16,38 @@ concurrency:
 
 jobs:
   test:
-    name: ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-14, windows-latest]
+    name: ubuntu (PoMFRIT + FAEST)
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install PoMFRIT toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-14 g++-14 build-essential pipx git
+          pipx install meson ninja
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build PoMFRIT native dependencies
+        run: bash scripts/build-pomfrit-deps.sh
+
       - name: cargo fmt check
         run: cargo fmt --all --check
-        if: matrix.os == 'ubuntu-latest'
+
       - name: build
         run: cargo build --workspace --all-targets
-      - name: clippy (shipped surface, no insecure paths)
+
+      - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
-        if: matrix.os == 'ubuntu-latest'
-      - name: test (shipped surface)
+
+      - name: test
         run: cargo test --workspace
-      # Protocol end-to-end coverage runs the dev-sim attestation stand-ins,
-      # which are compiled ONLY here — never in the shipped binary.
+
       - name: test (dev-sim protocol e2e)
         run: cargo test -p eat-pass-core -p eat-pass-cli --features dev-sim
 
-  # Exercises the optional networked shared-state backend (m3) against a real
-  # Redis. Kept off the default matrix so the credential build stays pure-Rust
-  # and cross-platform.
   redis:
     name: redis backend
     runs-on: ubuntu-latest
@@ -59,21 +65,46 @@ jobs:
       REDIS_URL: redis://127.0.0.1:6379
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install PoMFRIT toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-14 g++-14 build-essential pipx git
+          pipx install meson ninja
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build PoMFRIT native dependencies
+        run: bash scripts/build-pomfrit-deps.sh
+
       - name: clippy (redis feature)
         run: cargo clippy -p eat-pass-cli --features redis --all-targets -- -D warnings
+
       - name: test (redis feature)
         run: cargo test -p eat-pass-cli --features redis
 
-  # Generate the Android (Kotlin) + iOS (Swift) UniFFI bindings from the built
-  # cdylib and publish them as artifacts. The crate itself is built/tested by the
-  # default matrix above; this proves the binding pipeline is reproducible.
   mobile-bindings:
     name: mobile bindings
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install PoMFRIT toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-14 g++-14 build-essential pipx git
+          pipx install meson ninja
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build PoMFRIT native dependencies
+        run: bash scripts/build-pomfrit-deps.sh
+
       - name: generate kotlin + swift bindings
         run: ./mobile/generate-bindings.sh
+
       - name: upload bindings
         uses: actions/upload-artifact@v4
         with:

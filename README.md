@@ -2,12 +2,18 @@
 
 attestation-gated, unlinkable authorization tokens.
 
-a server should be able to accept requests *only* from clients running an
-attested build it trusts — without learning *which* client. eat-pass issues
-anonymous, publicly-verifiable tokens (**PoMFRIT** blind signatures — MAYO1 +
-VOLE-in-the-head, Privacy Pass–shaped wire format) where the right to mint a
-token is gated on a valid [unified-quote](https://github.com/maceip/unified-quote)
-eat whose measurement the issuer accepts.
+Two post-quantum layers work together:
+
+- **FAEST-128f** — the attester signs short-lived **issuance authorization** after
+  hardware evidence passes your policy (CVM quote, App Attest, TPM bundle, …).
+- **PoMFRIT** — the issuer **blind-signs** anonymous spend tokens (MAYO +
+  VOLE-in-the-head, Privacy Pass–shaped wire format, token type `0x4550`).
+
+A server should accept requests *only* from clients running an attested build it
+trusts — without learning *which* client. Minting is gated on a valid
+[unified-quote](https://github.com/maceip/unified-quote) measurement the
+attester allowlists; spending stays unlinkable because the issuer never sees
+the unblinded token.
 
 it is the open analog of google's *aratea / blindsignauth* anonymous tokens and
 apple's *private access tokens / arc*, with one change that matters: issuance is
@@ -16,25 +22,26 @@ gated on hardware attestation (an eat), not on an account.
 ## the shape
 
 ```
-  client (attested build)            issuer                         origin
-  ───────────────────────            ──────                         ──────
-  hold a unified-quote eat
-  blind a random nonce  ───────────▶ verify eat to a hw root
-                                     check measurement allowlist
-                                     check channel binding
-                        ◀─────────── blind-sign the nonce
+  client (attested build)     attester (FAEST)    issuer (PoMFRIT)      origin
+  ───────────────────────     ────────────────    ────────────────      ──────
+  collect evidence
+  blind a random nonce  ───▶  verify evidence
+                              check policy
+                              sign authorization ─▶ blind-sign nonce
+                        ◀────────────────────────── blind signatures
   finalize → token
-  POST + token  ─────────────────────────────────────────────────▶ verify token
-                                                                    (issuer pubkey)
-                                                                    spend nonce, serve
+  POST + token  ──────────────────────────────────────────────────────▶ verify token
+                                                                         spend nonce
 ```
 
+- **FAEST** binds *this mint* to *this attestation + policy decision* — the
+  issuer only signs when it holds a valid attester authorization.
+- **PoMFRIT** binds the spend token to the blinded nonce — publicly verifiable,
+  offline-checkable, one-time-spendable (~7 KiB on the wire).
 - the **issuer** never sees the unblinded token, so it cannot link an issued
   token to a redemption. attestation proves *eligibility*, not *identity*.
 - the **origin** only needs the issuer's public key to gate a route. no callback,
   no per-request attestation, no shared secret.
-- the **token** is a PoMFRIT blind signature over a client-chosen nonce —
-  publicly verifiable, offline-checkable, one-time-spendable (~7 KiB on the wire).
 
 ## where it sits in the stack
 
