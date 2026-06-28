@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "id": "desktop-agent-linux-dev",
+  "evidence_profile": "desktop-tpm-client",
+  "class": { "name": "desktop-agents", "version": 1 },
+  "allow": [
+    {
+      "measurement": "REPLACE_WITH_BUILD_ID_HASH_HEX",
+      "registry_status": "recommended"
+    }
+  ],
+  "notes": "measurement = desktop_build_id_hash(sha256(agent binary)). Collect bundle: scripts/collect-desktop-tpm.sh"
+}

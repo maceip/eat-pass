@@ -1,0 +1,3 @@
+[submodule "third_party/pq_blind_signatures"]
+	path = third_party/pq_blind_signatures
+	url = https://github.com/shibammukherjee/pq_blind_signatures.git

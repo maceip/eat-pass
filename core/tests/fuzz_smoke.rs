@@ -36,11 +36,11 @@ impl Rng {
 fn token_from_bytes_never_panics_and_roundtrips() {
     let mut rng = Rng(0x1234_5678_9abc_def0);
     for _ in 0..50_000 {
-        // Bias toward the boundary around the 98-byte fixed prefix.
+        // Bias toward the boundary around the 98-byte fixed prefix + authenticator.
         let n = match rng.next_u64() % 4 {
-            0 => rng.len(8),       // far too short
-            1 => 90 + rng.len(20), // straddles the 99-byte minimum
-            _ => rng.len(512),     // arbitrary
+            0 => rng.len(8),        // far too short
+            1 => 120 + rng.len(20), // straddles the 131-byte minimum
+            _ => rng.len(8192),     // arbitrary (PoMFRIT proofs are multi-KiB)
         };
         let buf = rng.bytes(n);
         match Token::from_bytes(&buf) {
@@ -50,8 +50,8 @@ fn token_from_bytes_never_panics_and_roundtrips() {
                 assert_eq!(tok.to_bytes(), buf, "roundtrip mismatch for len {n}");
             }
             Err(_) => {
-                // Anything < 99 bytes must be rejected, never accepted.
-                assert!(buf.len() < 99, "short buffer should have been rejected");
+                // Anything < 131 bytes must be rejected, never accepted.
+                assert!(buf.len() < 131, "short buffer should have been rejected");
             }
         }
     }
@@ -92,13 +92,13 @@ fn parse_authorization_never_panics() {
 
 #[test]
 fn authorization_roundtrips_for_arbitrary_tokens() {
-    // Any byte string ≥ 99 bytes is a valid Token wire form; rendering it as an
+    // Any byte string ≥ 131 bytes is a valid Token wire form; rendering it as an
     // RFC 9577 header and parsing it back must recover the same token.
     let mut rng = Rng(0xa5a5_5a5a_dead_beef);
     for _ in 0..10_000 {
         let tail = rng.len(300);
-        let buf = rng.bytes(99 + tail);
-        let tok = Token::from_bytes(&buf).expect("≥99 bytes parses");
+        let buf = rng.bytes(131 + tail);
+        let tok = Token::from_bytes(&buf).expect("≥131 bytes parses");
         let header = http::authorization(&tok);
         let back = http::parse_authorization(&header).expect("our own header parses");
         assert_eq!(back.to_bytes(), buf);

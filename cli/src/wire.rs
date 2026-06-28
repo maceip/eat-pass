@@ -26,6 +26,7 @@ pub struct AuthorizeBody {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AuthorizeResponse {
     pub authorization_b64: String,
+    pub appraisal: eat_pass_policy::AppraisalResult,
 }
 
 /// `GET /pubkey` on the attester.

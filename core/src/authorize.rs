@@ -1,15 +1,18 @@
 //! Split attester / issuer trust boundary (A.2).
 //!
 //! The **attester** verifies hardware attestation and returns a short-lived,
-//! ed25519-signed [`IssuanceAuthorization`]. The **issuer** holds only the
-//! blind-RSA signing key and mints tokens on presentation of a valid
+//! FAEST-128f-signed [`IssuanceAuthorization`]. The **issuer** holds only the
+//! PoMFRIT signing key and mints tokens on presentation of a valid
 //! authorization — it never sees or judges raw EAT bytes.
 
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use faest::FAEST128fVerifyingKey;
 use serde::{Deserialize, Serialize};
 
-use crate::gate::{AttestationVerifier, GateError};
+use crate::faest_sig::{self, signing_key_from_seed};
+use crate::gate::{AttestationVerifier, GateError, Measurement};
 use crate::ratelimit::{RateLimitError, RateLimiter};
+
+pub type AttesterVerifyingKey = FAEST128fVerifyingKey;
 
 /// Wire version for [`IssuanceAuthorization`]. Bump on breaking changes.
 pub const AUTHORIZATION_VERSION: u32 = 1;
@@ -17,7 +20,7 @@ pub const AUTHORIZATION_VERSION: u32 = 1;
 /// Default authorization lifetime (seconds) when the attester does not override.
 pub const DEFAULT_AUTHORIZATION_TTL_SECS: u64 = 60;
 
-const AUTH_DOMAIN: &[u8] = b"eat-pass/v0/issuance-auth\0";
+const AUTH_DOMAIN: &[u8] = b"eat-pass/issuance-auth\0";
 
 /// Signed payload authorizing one blind-sign batch at the issuer.
 ///
@@ -63,7 +66,7 @@ impl IssuanceAuthorization {
     }
 
     /// Verify the attester signature and time bounds.
-    pub fn verify(&self, attester_pub: &VerifyingKey, now: u64) -> Result<(), GateError> {
+    pub fn verify(&self, attester_pub: &AttesterVerifyingKey, now: u64) -> Result<(), GateError> {
         if self.version != AUTHORIZATION_VERSION {
             return Err(GateError::AttestationInvalid(format!(
                 "authorization version {} unsupported (want {AUTHORIZATION_VERSION})",
@@ -80,14 +83,7 @@ impl IssuanceAuthorization {
                 "authorization expired".into(),
             ));
         }
-        let sig_bytes: [u8; 64] = self
-            .sig
-            .as_slice()
-            .try_into()
-            .map_err(|_| GateError::AttestationInvalid("authorization sig length".into()))?;
-        let sig = Signature::from_bytes(&sig_bytes);
-        attester_pub
-            .verify(&self.signed_bytes(), &sig)
+        faest_sig::verify(attester_pub, &self.signed_bytes(), &self.sig)
             .map_err(|e| GateError::AttestationInvalid(format!("authorization sig: {e}")))?;
         Ok(())
     }
@@ -95,7 +91,7 @@ impl IssuanceAuthorization {
 
 /// Holds the attester signing key and attestation policy verifier.
 pub struct Authorizer<V> {
-    signer: SigningKey,
+    signer: faest::FAEST128fSigningKey,
     verifier: V,
     ttl_secs: u64,
     policy_label: String,
@@ -109,7 +105,7 @@ impl<V: AttestationVerifier> Authorizer<V> {
         ttl_secs: u64,
     ) -> Self {
         Self {
-            signer: SigningKey::from_bytes(&seed),
+            signer: signing_key_from_seed(seed).expect("FAEST attester seed"),
             verifier,
             policy_label: policy_label.into(),
             ttl_secs,
@@ -117,7 +113,7 @@ impl<V: AttestationVerifier> Authorizer<V> {
     }
 
     pub fn verifying_key(&self) -> [u8; 32] {
-        self.signer.verifying_key().to_bytes()
+        faest_sig::public_bytes(&self.signer.verifying_key())
     }
 
     pub fn verifier(&self) -> &V {
@@ -138,6 +134,22 @@ impl<V: AttestationVerifier> Authorizer<V> {
             ));
         }
         let measurement = self.verifier.verify(eat, binding)?;
+        self.sign_authorization(&measurement, binding, max_batch, now)
+    }
+
+    /// Sign authorization after the attester has verified evidence and policy.
+    pub fn sign_authorization(
+        &self,
+        measurement: &Measurement,
+        binding: &[u8; 32],
+        max_batch: u32,
+        now: u64,
+    ) -> Result<IssuanceAuthorization, GateError> {
+        if max_batch == 0 {
+            return Err(GateError::AttestationInvalid(
+                "max_batch must be non-zero".into(),
+            ));
+        }
         let mut auth = IssuanceAuthorization {
             version: AUTHORIZATION_VERSION,
             binding: *binding,
@@ -148,28 +160,21 @@ impl<V: AttestationVerifier> Authorizer<V> {
             iat: now,
             sig: Vec::new(),
         };
-        let sig = self.signer.sign(&auth.signed_bytes());
-        auth.sig = sig.to_bytes().to_vec();
+        auth.sig = faest_sig::sign(&self.signer, &auth.signed_bytes());
         Ok(auth)
     }
 }
 
-/// Parse a pinned attester verifying key (32 raw bytes, hex-encoded).
-pub fn attester_pubkey_from_hex(hex_str: &str) -> Result<VerifyingKey, GateError> {
-    let bytes = hex::decode(hex_str.trim())
-        .map_err(|e| GateError::AttestationInvalid(format!("attester pub hex: {e}")))?;
-    let arr: [u8; 32] = bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| GateError::AttestationInvalid("attester pub must be 32 bytes".into()))?;
-    VerifyingKey::from_bytes(&arr)
-        .map_err(|e| GateError::AttestationInvalid(format!("attester pub: {e}")))
+/// Parse a pinned attester FAEST verifying key (32 raw bytes, hex-encoded).
+pub fn attester_pubkey_from_hex(hex_str: &str) -> Result<AttesterVerifyingKey, GateError> {
+    faest_sig::verifying_key_from_hex(hex_str)
+        .map_err(|e| GateError::AttestationInvalid(e.to_string()))
 }
 
 /// Issuer path: verify authorization, enforce quota, blind-sign.
 pub fn issue_authorized_with_limit<R: RateLimiter>(
     issuer: &crate::Issuer,
-    attester_pub: &VerifyingKey,
+    attester_pub: &AttesterVerifyingKey,
     req: &crate::SignRequest,
     auth: &IssuanceAuthorization,
     limiter: &R,
@@ -177,14 +182,14 @@ pub fn issue_authorized_with_limit<R: RateLimiter>(
 ) -> Result<crate::SignResponse, GateError> {
     auth.verify(attester_pub, now)?;
 
-    let binding = crate::binding_of(&req.blinded);
+    let binding = crate::binding_of(&req.body.blinded);
     if binding != req.binding {
         return Err(GateError::BindingMismatch);
     }
     if binding != auth.binding {
         return Err(GateError::BindingMismatch);
     }
-    let batch = req.blinded.len() as u32;
+    let batch = req.body.blinded.len() as u32;
     if batch > auth.max_batch {
         return Err(GateError::AttestationInvalid(format!(
             "batch size {batch} exceeds authorization max_batch {}",
@@ -252,9 +257,9 @@ mod tests {
             DEFAULT_AUTHORIZATION_TTL_SECS,
         );
         let attester_pub =
-            attester_pubkey_from_hex(&hex::encode(attester.verifying_key())).unwrap();
+            attester_pubkey_from_hex(&hex::encode(authorizer.verifying_key())).unwrap();
 
-        let issuer = Issuer::generate(1, 2048).unwrap();
+        let issuer = Issuer::generate(1);
         let pk = issuer.public();
         let challenge = TokenChallenge::new("issuer", "origin");
         let (req, pending) = Client::begin(&pk, &challenge, 2).unwrap();
@@ -284,13 +289,13 @@ mod tests {
         let verifier = DevVerifier::new(attester.verifying_key(), [value_x.clone()]).unwrap();
         let authorizer = Authorizer::new(seed, verifier, "default@v1", 1);
         let attester_pub =
-            attester_pubkey_from_hex(&hex::encode(attester.verifying_key())).unwrap();
+            attester_pubkey_from_hex(&hex::encode(authorizer.verifying_key())).unwrap();
         let measurement = Measurement::new("dev", value_x);
         let binding = [0u8; 32];
         let eat = attester.attest(&measurement, &binding);
         let auth = authorizer.authorize(&eat, &binding, 1, now()).unwrap();
 
-        let issuer = Issuer::generate(1, 2048).unwrap();
+        let issuer = Issuer::generate(1);
         let pk = issuer.public();
         let challenge = TokenChallenge::new("i", "o");
         let (req, _pending) = Client::begin(&pk, &challenge, 1).unwrap();

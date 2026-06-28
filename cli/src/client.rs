@@ -13,6 +13,13 @@ use crate::wire::{AuthorizeBody, AuthorizeResponse, KtResponse, SignBody};
 pub enum Attest {
     /// Real Azure SEV-SNP vTPM bundle via `uq azure collect --value-x <binding>`.
     Azure { cmd: String },
+    /// Linux/Windows TPM2 via `scripts/collect-desktop-tpm.sh`.
+    DesktopTpm {
+        script: String,
+        build_digest: String,
+    },
+    /// Pre-collected desktop evidence JSON (TPM bundle or macOS App Attest).
+    DesktopBundle { path: std::path::PathBuf },
 }
 
 fn collect_eat(attest: &Attest, binding: &[u8; 32]) -> anyhow::Result<Vec<u8>> {
@@ -38,6 +45,24 @@ fn collect_eat(attest: &Attest, binding: &[u8; 32]) -> anyhow::Result<Vec<u8>> {
             let _ = std::fs::remove_file(&out);
             Ok(bytes)
         }
+        Attest::DesktopTpm { script, build_digest } => {
+            let out = tempfile_path("eatpass-desktop-tpm", "json")?;
+            let binding_hex = hex::encode(binding);
+            let status = std::process::Command::new("bash")
+                .arg(script)
+                .arg("-o")
+                .arg(&out)
+                .env("BINDING", &binding_hex)
+                .env("BUILD_DIGEST", build_digest)
+                .status()
+                .map_err(|e| anyhow::anyhow!("spawn desktop tpm collect `{script}`: {e}"))?;
+            if !status.success() {
+                anyhow::bail!("desktop tpm collect exited with {status}");
+            }
+            std::fs::read(&out).map_err(|e| anyhow::anyhow!("read {out}: {e}"))
+        }
+        Attest::DesktopBundle { path } => std::fs::read(path)
+            .map_err(|e| anyhow::anyhow!("read desktop bundle {}: {e}", path.display())),
     }
 }
 
@@ -49,6 +74,27 @@ fn tempfile_path(prefix: &str, ext: &str) -> anyhow::Result<String> {
         .join(format!("{prefix}-{}.{ext}", hex::encode(rnd)))
         .to_string_lossy()
         .into_owned())
+}
+
+async fn fetch_origin_challenge(
+    http: &reqwest::Client,
+    resource_url: &str,
+) -> anyhow::Result<TokenChallenge> {
+    let r = http.get(resource_url).send().await?;
+    if r.status() != reqwest::StatusCode::UNAUTHORIZED {
+        anyhow::bail!(
+            "expected 401 from origin at {resource_url}, got {}",
+            r.status()
+        );
+    }
+    let hdr = r
+        .headers()
+        .get("www-authenticate")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| {
+            anyhow::anyhow!("401 from {resource_url} missing WWW-Authenticate header")
+        })?;
+    http::parse_www_authenticate(hdr).map_err(|e| anyhow::anyhow!("parse challenge: {e}"))
 }
 
 fn http_client(insecure_tls: bool) -> anyhow::Result<reqwest::Client> {
@@ -131,7 +177,17 @@ pub async fn run(
         eprintln!("kt-head     {}:{}", kt.signed_head.seq, kt.signed_head.head);
     }
 
-    let challenge = TokenChallenge::new(issuer_name, origin_info);
+    let challenge = if let Some(ref resource_url) = present {
+        let ch = fetch_origin_challenge(&http_client, resource_url).await?;
+        eprintln!(
+            "origin      challenge digest={} redemption_context={}",
+            hex::encode(ch.digest()),
+            ch.has_redemption_context()
+        );
+        ch
+    } else {
+        TokenChallenge::new(issuer_name, origin_info)
+    };
     let (req, pending) =
         Client::begin(&pk, &challenge, count).map_err(|e| anyhow::anyhow!("begin: {e}"))?;
 

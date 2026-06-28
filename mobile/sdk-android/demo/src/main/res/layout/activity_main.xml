@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:padding="16dp">
+
+    <EditText
+        android:id="@+id/attesterUrl"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:hint="Attester URL"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <EditText
+        android:id="@+id/issuerUrl"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:hint="Issuer URL"
+        app:layout_constraintTop_toBottomOf="@id/attesterUrl"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_marginTop="8dp" />
+
+    <Button
+        android:id="@+id/mint"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Mint coupled token"
+        app:layout_constraintTop_toBottomOf="@id/issuerUrl"
+        app:layout_constraintStart_toStartOf="parent"
+        android:layout_marginTop="16dp" />
+
+    <TextView
+        android:id="@+id/output"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:text="Tap mint (attester + issuer must be running)"
+        app:layout_constraintTop_toBottomOf="@id/mint"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_marginTop="16dp" />
+</androidx.constraintlayout.widget.ConstraintLayout>

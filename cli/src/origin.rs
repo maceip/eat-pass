@@ -4,7 +4,7 @@
 //! no token it answers `401` + `WWW-Authenticate: PrivateToken challenge=…,
 //! token-key=…` (RFC 9577 §2.2) so a client knows exactly what to mint. A
 //! presented token is verified against the issuer key + the challenge this
-//! origin issues, then its nonce is spent once via the **central redeemer**
+//! origin issued, then its nonce is spent once via the **central redeemer**
 //! (`POST {redeemer}/redeem`) so double-spend is enforced globally across every
 //! origin replica — there is no origin-local fallback.
 
@@ -25,6 +25,8 @@ use eat_pass_core::{http, IssuerPublicKey, TokenChallenge, Verifier};
 use crate::tls::{serve, TlsPaths};
 use crate::wire::{KtResponse, RedeemBody};
 
+const MAX_RECENT_CHALLENGES: usize = 64;
+
 /// A verifier for one issuer key version, plus the epoch its spends bucket into.
 struct KeyEntry {
     verifier: Verifier,
@@ -34,8 +36,14 @@ struct KeyEntry {
 struct OriginState {
     /// Issuer base URL (no trailing slash) — used to resolve historical keys.
     base: String,
-    challenge: TokenChallenge,
-    www_authenticate: String,
+    issuer_name: String,
+    origin_info: String,
+    /// Current issuer key advertised in every fresh `WWW-Authenticate`.
+    advertised_pk: IssuerPublicKey,
+    /// Recently issued challenges (matched by `Token::challenge_digest` on redeem).
+    recent_challenges: RwLock<Vec<TokenChallenge>>,
+    /// When true, every challenge carries a fresh 32-byte redemption context.
+    require_redemption_context: bool,
     /// `token_key_id -> KeyEntry`, seeded with the current key and filled in
     /// lazily as tokens from older (rotated-out) key versions arrive. This is
     /// what closes the rotation gap: a token minted under v1 is still accepted
@@ -61,6 +69,7 @@ pub async fn run(
     tls: Option<TlsPaths>,
     insecure_http: bool,
     insecure_tls: bool,
+    require_redemption_context: bool,
 ) -> anyhow::Result<()> {
     let base = issuer_url.trim_end_matches('/').to_string();
     let mut http_builder = reqwest::Client::builder();
@@ -81,23 +90,22 @@ pub async fn run(
     let cur_epoch = pk.key_version;
     let cur_tkid = pk.token_key_id()?;
 
-    let challenge = TokenChallenge::new(issuer_name, origin_info);
-    let www_authenticate = http::www_authenticate(&challenge.to_bytes(), &pk)
-        .map_err(|e| anyhow::anyhow!("www-authenticate: {e}"))?;
-
     let mut keys = HashMap::new();
     keys.insert(
         cur_tkid,
         Arc::new(KeyEntry {
-            verifier: Verifier::new(pk),
+            verifier: Verifier::new(pk.clone()),
             epoch: cur_epoch,
         }),
     );
 
     let state = Arc::new(OriginState {
         base,
-        challenge,
-        www_authenticate,
+        issuer_name,
+        origin_info,
+        advertised_pk: pk,
+        recent_challenges: RwLock::new(Vec::new()),
+        require_redemption_context,
         keys: RwLock::new(keys),
         kt_log_pub,
         redeemer: redeemer.trim_end_matches('/').to_string(),
@@ -116,12 +124,45 @@ pub async fn run(
         "eat-pass origin: double-spend enforced via central redeemer {}/redeem",
         state.redeemer
     );
+    if require_redemption_context {
+        eprintln!("eat-pass origin: each 401 issues a fresh 32-byte redemption context");
+    }
 
     let app = Router::new()
         .route("/resource", get(resource))
         .with_state(state);
 
     serve(app, listen, tls, insecure_http, "eat-pass origin").await
+}
+
+fn issue_fresh_challenge(state: &OriginState) -> anyhow::Result<(TokenChallenge, String)> {
+    let mut ch = TokenChallenge::new(&state.issuer_name, &state.origin_info);
+    if state.require_redemption_context {
+        ch = ch
+            .with_random_redemption_context()
+            .map_err(|e| anyhow::anyhow!("redemption context: {e}"))?;
+    }
+    {
+        let mut recent = state.recent_challenges.write().unwrap();
+        recent.push(ch.clone());
+        if recent.len() > MAX_RECENT_CHALLENGES {
+            let drop = recent.len() - MAX_RECENT_CHALLENGES;
+            recent.drain(0..drop);
+        }
+    }
+    let www = http::www_authenticate(&ch.to_bytes(), &state.advertised_pk)
+        .map_err(|e| anyhow::anyhow!("www-authenticate: {e}"))?;
+    Ok((ch, www))
+}
+
+fn challenge_for_digest(state: &OriginState, digest: &[u8; 32]) -> Option<TokenChallenge> {
+    state
+        .recent_challenges
+        .read()
+        .unwrap()
+        .iter()
+        .find(|c| c.digest() == *digest)
+        .cloned()
 }
 
 /// Return the [`KeyEntry`] for a token's `token_key_id`, resolving and caching
@@ -207,12 +248,12 @@ async fn resolve_via_kt(
 
 async fn resource(State(state): State<Arc<OriginState>>, headers: HeaderMap) -> impl IntoResponse {
     let Some(auth) = headers.get("authorization").and_then(|v| v.to_str().ok()) else {
-        return challenge_response(&state);
+        return challenge_response(&state).await;
     };
 
     let token = match http::parse_authorization(auth) {
         Ok(t) => t,
-        Err(_) => return challenge_response(&state),
+        Err(_) => return challenge_response(&state).await,
     };
 
     // Resolve the key this token was signed under (current or a rotated-out
@@ -225,7 +266,24 @@ async fn resource(State(state): State<Arc<OriginState>>, headers: HeaderMap) -> 
             .into_response();
     };
 
-    let nonce = match entry.verifier.verify(&token, &state.challenge) {
+    let Some(challenge) = challenge_for_digest(&state, &token.challenge_digest) else {
+        return (
+            StatusCode::FORBIDDEN,
+            "token challenge unknown or expired (mint against a fresh WWW-Authenticate)\n"
+                .to_string(),
+        )
+            .into_response();
+    };
+
+    if state.require_redemption_context && !challenge.has_redemption_context() {
+        return (
+            StatusCode::FORBIDDEN,
+            "origin requires a 32-byte redemption context on the challenge\n".to_string(),
+        )
+            .into_response();
+    }
+
+    let nonce = match entry.verifier.verify(&token, &challenge) {
         Ok(n) => n,
         Err(e) => {
             return (StatusCode::FORBIDDEN, format!("token rejected: {e}\n")).into_response();
@@ -268,11 +326,18 @@ async fn spend_centrally(
     }
 }
 
-fn challenge_response(state: &OriginState) -> axum::response::Response {
-    (
-        StatusCode::UNAUTHORIZED,
-        [("www-authenticate", state.www_authenticate.clone())],
-        "PrivateToken required\n".to_string(),
-    )
-        .into_response()
+async fn challenge_response(state: &Arc<OriginState>) -> axum::response::Response {
+    match issue_fresh_challenge(state) {
+        Ok((_ch, www)) => (
+            StatusCode::UNAUTHORIZED,
+            [("www-authenticate", www)],
+            "PrivateToken required\n".to_string(),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("could not issue challenge: {e}\n"),
+        )
+            .into_response(),
+    }
 }

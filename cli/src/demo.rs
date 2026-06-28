@@ -10,7 +10,7 @@ use eat_pass_core::{http, Client, Issuer, SignResponse, TokenChallenge};
 use crate::wire::SignBody;
 
 /// Run the end-to-end split attester → issuer flow.
-pub fn run_in_process(modulus_bits: usize, count: usize) -> anyhow::Result<usize> {
+pub fn run_in_process(count: usize) -> anyhow::Result<usize> {
     let seed = [0x42u8; 32];
     let value_x = vec![0x42u8; 32];
     let measurement = Measurement::new("dev", value_x.clone());
@@ -20,7 +20,7 @@ pub fn run_in_process(modulus_bits: usize, count: usize) -> anyhow::Result<usize
     let attester_pub =
         attester_pubkey_from_hex(&hex::encode(authorizer.verifying_key())).unwrap();
 
-    let issuer = Issuer::generate(1, modulus_bits)?;
+    let issuer = Issuer::generate(1);
     let pk = issuer.public();
     let limiter = InMemoryRateLimiter::new(64, 3600);
 

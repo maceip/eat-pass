@@ -10,6 +10,7 @@ pub mod client;
 pub mod demo;
 pub mod issuer;
 pub mod origin;
+pub mod policy;
 pub mod redeemer;
 pub mod store;
 pub mod tls;

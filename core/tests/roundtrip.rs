@@ -12,11 +12,8 @@ use eat_pass_core::{
     TokenChallenge, Verifier,
 };
 
-// 2048-bit keys keep tests fast; production default is 3072.
-const TEST_BITS: usize = 2048;
-
 fn issuer() -> Issuer {
-    Issuer::generate(1, TEST_BITS).expect("keygen")
+    Issuer::generate(1)
 }
 
 fn challenge() -> TokenChallenge {
@@ -53,7 +50,7 @@ fn tokens_are_unlinkable_to_blinded_messages() {
     let tokens = pending.finalize(&pk, &resp).unwrap();
 
     assert_ne!(tokens[0].nonce, tokens[1].nonce);
-    let blinded0: &[u8] = req.blinded[0].as_ref();
+    let blinded0: &[u8] = req.body.blinded[0].as_ref();
     let auth0: &[u8] = tokens[0].authenticator.as_ref();
     assert_ne!(blinded0, auth0);
 }
@@ -112,7 +109,7 @@ fn key_consistency_check() {
     let pinned = pk.token_key_id().unwrap();
     assert!(check_key_consistency(&pinned, &pk).is_ok());
 
-    let other = Issuer::generate(1, TEST_BITS).unwrap().public();
+    let other = Issuer::generate(1).public();
     assert!(check_key_consistency(&pinned, &other).is_err());
 }
 
@@ -169,7 +166,7 @@ fn gate_happy_path() {
         DevVerifier::new(attester.verifying_key(), [measurement.value_x.clone()]).unwrap();
 
     let (req, pending) = Client::begin(&pk, &ch, 2).unwrap();
-    let binding = binding_of(&req.blinded);
+    let binding = binding_of(&req.body.blinded);
     let eat = attester.attest(&measurement, &binding);
 
     let resp = issue_gated(&issuer, &verifier_gate, &req, &eat).unwrap();
@@ -204,7 +201,7 @@ fn gate_rejects_unallowed_measurement() {
     let gate = DevVerifier::new(attester.verifying_key(), [vec![1u8; 32]]).unwrap();
 
     let (req, _pending) = Client::begin(&pk, &challenge(), 1).unwrap();
-    let binding = binding_of(&req.blinded);
+    let binding = binding_of(&req.body.blinded);
     let eat = attester.attest(&Measurement::new("dev", vec![9u8; 32]), &binding);
     let err = issue_gated(&issuer, &gate, &req, &eat).unwrap_err();
     assert_eq!(err, GateError::MeasurementNotAllowed);
@@ -220,7 +217,7 @@ fn gate_rejects_forged_attester() {
     let gate = DevVerifier::new(real.verifying_key(), [measurement.value_x.clone()]).unwrap();
 
     let (req, _pending) = Client::begin(&pk, &challenge(), 1).unwrap();
-    let binding = binding_of(&req.blinded);
+    let binding = binding_of(&req.body.blinded);
     let eat = forger.attest(&measurement, &binding);
     let err = issue_gated(&issuer, &gate, &req, &eat).unwrap_err();
     assert!(matches!(err, GateError::AttestationInvalid(_)));
@@ -239,7 +236,7 @@ fn gate_on_measurement_class() {
     let gate = DevVerifier::new_for_class(attester.verifying_key(), class).unwrap();
 
     let (req, _pending) = Client::begin(&pk, &challenge(), 1).unwrap();
-    let binding = binding_of(&req.blinded);
+    let binding = binding_of(&req.body.blinded);
     // build_b is in the class even though we didn't name it exactly
     let eat = attester.attest(&Measurement::new("dev", build_b), &binding);
     assert!(issue_gated(&issuer, &gate, &req, &eat).is_ok());
@@ -257,12 +254,12 @@ fn rate_limit_gate_blocks_over_quota() {
 
     // First batch of 2 consumes the whole quota.
     let (req1, _p1) = Client::begin(&pk, &challenge(), 2).unwrap();
-    let eat1 = attester.attest(&m, &binding_of(&req1.blinded));
+    let eat1 = attester.attest(&m, &binding_of(&req1.body.blinded));
     assert!(issue_gated_with_limit(&issuer, &gate, &req1, &eat1, &limiter).is_ok());
 
     // Next request from the same build is over quota.
     let (req2, _p2) = Client::begin(&pk, &challenge(), 1).unwrap();
-    let eat2 = attester.attest(&m, &binding_of(&req2.blinded));
+    let eat2 = attester.attest(&m, &binding_of(&req2.body.blinded));
     let err = issue_gated_with_limit(&issuer, &gate, &req2, &eat2, &limiter).unwrap_err();
     assert_eq!(err, GateError::QuotaExceeded);
 }

@@ -18,11 +18,10 @@ use axum::{
     Json, Router,
 };
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
-use eat_pass_core::authorize::{attester_pubkey_from_hex, issue_authorized_with_limit};
+use eat_pass_core::authorize::{attester_pubkey_from_hex, issue_authorized_with_limit, AttesterVerifyingKey};
 use eat_pass_core::gate::GateError;
 use eat_pass_core::transparency::{KeyLog, LogSigner, SignedHead};
 use eat_pass_core::{Issuer, IssuerPublicKey, SignResponse};
-use ed25519_dalek::VerifyingKey;
 use tokio::sync::RwLock;
 
 use crate::store::LimitBackend;
@@ -41,19 +40,17 @@ struct Rotating {
 
 struct IssuerState {
     rot: RwLock<Rotating>,
-    attester_pub: VerifyingKey,
+    attester_pub: AttesterVerifyingKey,
     limiter: LimitBackend,
     log_signer: LogSigner,
     kt_log_pub: [u8; 32],
     admin_token: Option<String>,
-    modulus_bits: usize,
 }
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     listen: SocketAddr,
     attester_pub_hex: String,
-    modulus_bits: usize,
     max_per_epoch: u32,
     epoch_secs: u64,
     rate_backend: Option<String>,
@@ -63,8 +60,8 @@ pub async fn run(
     let attester_pub = attester_pubkey_from_hex(&attester_pub_hex)
         .map_err(|e| anyhow::anyhow!("--attester-pub: {e}"))?;
 
-    eprintln!("eat-pass issuer: generating {modulus_bits}-bit issuance key (key_version 1)…");
-    let issuer = Issuer::generate(1, modulus_bits)?;
+    eprintln!("eat-pass issuer: generating PoMFRIT issuance key (key_version 1)…");
+    let issuer = Issuer::generate(1);
     let pk = issuer.public();
     let tkid = pk.token_key_id()?;
 
@@ -100,7 +97,6 @@ pub async fn run(
         log_signer,
         kt_log_pub,
         admin_token: admin_token.clone(),
-        modulus_bits,
     });
 
     eprintln!("  token_key_id   {}", hex::encode(tkid));
@@ -242,7 +238,7 @@ async fn rotate(
         let g = state.rot.read().await;
         g.current.public().key_version + 1
     };
-    let new_issuer = Issuer::generate(next_version, state.modulus_bits)
+    let new_issuer = Issuer::generate(next_version);
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("keygen: {e}")))?;
     let new_pk = new_issuer.public();
     let new_tkid = new_pk.token_key_id().map_err(|e| {
@@ -287,4 +283,8 @@ pub enum Backend {
     Uq,
     Azure,
     AzureTls,
+    AndroidKey,
+    IosAppAttest,
+    DesktopTpm,
+    MacOsAppAttest,
 }

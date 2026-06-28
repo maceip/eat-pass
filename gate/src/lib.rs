@@ -36,6 +36,8 @@ use unified_quote::eat::EatToken;
 use unified_quote::quote::verify::verify_platform_quote;
 use unified_quote::quote::Platform;
 use unified_quote::tee::azure::{self, AzureBundle};
+use unified_quote::tee::mobile::android::{self, AndroidKeyAttestationBundle};
+use unified_quote::tee::mobile::ios::{self, IosAppAttestBundle};
 
 /// Verifies a unified-quote EAT and extracts the build measurement, enforcing
 /// that the attestation commits to eat-pass's channel binding via `eat_nonce`.
@@ -153,6 +155,68 @@ impl AttestationVerifier for AzureUqVerifier {
     }
 }
 
+/// Verifies an Android KeyMint attestation bundle (no Play Integrity).
+#[derive(Clone, Copy, Default)]
+pub struct AndroidKeyAttestationVerifier;
+
+impl AndroidKeyAttestationVerifier {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl AttestationVerifier for AndroidKeyAttestationVerifier {
+    fn verify(&self, eat: &[u8], expected_binding: &[u8; 32]) -> Result<Measurement, GateError> {
+        let bundle: AndroidKeyAttestationBundle = serde_json::from_slice(eat)
+            .map_err(|e| GateError::AttestationInvalid(format!("android bundle: {e}")))?;
+        let verdict = android::verify_bundle(&bundle, expected_binding)
+            .map_err(|e| GateError::AttestationInvalid(format!("android verify: {e}")))?;
+        if verdict.verdict != "verified" {
+            return Err(GateError::AttestationInvalid(format!(
+                "android verdict: {}",
+                verdict.verdict
+            )));
+        }
+        let app_id = hex::decode(&verdict.app_id_hash)
+            .map_err(|e| GateError::AttestationInvalid(format!("app_id_hash: {e}")))?;
+        Ok(Measurement::new(
+            unified_quote::tee::mobile::ANDROID_PLATFORM,
+            app_id,
+        ))
+    }
+}
+
+/// Verifies an iOS App Attest assertion bound to eat-pass channel binding.
+#[derive(Clone, Copy, Default)]
+pub struct IosAppAttestVerifier;
+
+impl IosAppAttestVerifier {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl AttestationVerifier for IosAppAttestVerifier {
+    fn verify(&self, eat: &[u8], expected_binding: &[u8; 32]) -> Result<Measurement, GateError> {
+        let bundle: IosAppAttestBundle = serde_json::from_slice(eat)
+            .map_err(|e| GateError::AttestationInvalid(format!("ios bundle: {e}")))?;
+        let verdict = ios::verify_bundle(&bundle, expected_binding)
+            .map_err(|e| GateError::AttestationInvalid(format!("ios verify: {e}")))?;
+        if verdict.verdict != "verified" {
+            return Err(GateError::AttestationInvalid(format!(
+                "ios verdict: {}",
+                verdict.verdict
+            )));
+        }
+        let app_id = hex::decode(&verdict.app_id_hash)
+            .map_err(|e| GateError::AttestationInvalid(format!("app_id_hash: {e}")))?;
+        Ok(Measurement::new(
+            unified_quote::tee::mobile::IOS_PLATFORM,
+            app_id,
+        ))
+    }
+}
+
 /// Verifies an **Azure attested-TLS leaf certificate** — the exact evidence the
 /// live `attest.secure.build` CVM presents in its TLS handshake.
 ///
@@ -194,6 +258,65 @@ impl AttestationVerifier for AzureTlsVerifier {
         let measurement = hex::decode(&verdict.measurement)
             .map_err(|e| GateError::AttestationInvalid(format!("measurement hex: {e}")))?;
         Ok(Measurement::new("azure-sev-snp-vtpm", measurement))
+    }
+}
+
+/// Verifies a Linux or Windows TPM2 client bundle (desktop agent, no CVM).
+#[derive(Clone, Copy, Default)]
+pub struct DesktopTpmVerifier;
+
+impl DesktopTpmVerifier {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl AttestationVerifier for DesktopTpmVerifier {
+    fn verify(&self, eat: &[u8], expected_binding: &[u8; 32]) -> Result<Measurement, GateError> {
+        let bundle: unified_quote::tee::desktop::tpm::TpmClientBundle =
+            serde_json::from_slice(eat)
+                .map_err(|e| GateError::AttestationInvalid(format!("desktop tpm bundle: {e}")))?;
+        let verdict = unified_quote::tee::desktop::tpm::verify_bundle(&bundle, expected_binding)
+            .map_err(|e| GateError::AttestationInvalid(format!("desktop tpm: {e}")))?;
+        if verdict.verdict != "verified" {
+            return Err(GateError::AttestationInvalid(format!(
+                "desktop tpm verdict: {}",
+                verdict.verdict
+            )));
+        }
+        let value_x = hex::decode(&verdict.identity_hash)
+            .map_err(|e| GateError::AttestationInvalid(format!("identity_hash: {e}")))?;
+        Ok(Measurement::new(verdict.platform, value_x))
+    }
+}
+
+/// Verifies a macOS App Attest bundle for desktop agents.
+#[derive(Clone, Copy, Default)]
+pub struct MacOsAppAttestVerifier;
+
+impl MacOsAppAttestVerifier {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl AttestationVerifier for MacOsAppAttestVerifier {
+    fn verify(&self, eat: &[u8], expected_binding: &[u8; 32]) -> Result<Measurement, GateError> {
+        let bundle: unified_quote::tee::desktop::app_attest::MacOsAppAttestBundle =
+            serde_json::from_slice(eat)
+                .map_err(|e| GateError::AttestationInvalid(format!("macos bundle: {e}")))?;
+        let verdict =
+            unified_quote::tee::desktop::app_attest::verify_bundle(&bundle, expected_binding)
+                .map_err(|e| GateError::AttestationInvalid(format!("macos app attest: {e}")))?;
+        if verdict.verdict != "verified" {
+            return Err(GateError::AttestationInvalid(format!(
+                "macos verdict: {}",
+                verdict.verdict
+            )));
+        }
+        let value_x = hex::decode(&verdict.identity_hash)
+            .map_err(|e| GateError::AttestationInvalid(format!("app_id_hash: {e}")))?;
+        Ok(Measurement::new(verdict.platform, value_x))
     }
 }
 
@@ -285,5 +408,19 @@ mod tests {
             Err(GateError::AttestationInvalid(m)) => assert!(m.contains("tls_spki")),
             other => panic!("expected AttestationInvalid(tls_spki …), got {other:?}"),
         }
+    }
+
+    #[test]
+    fn desktop_tpm_rejects_malformed_bundle() {
+        let v = DesktopTpmVerifier::new();
+        let err = v.verify(b"not json", &[0u8; 32]).unwrap_err();
+        assert!(matches!(err, GateError::AttestationInvalid(_)));
+    }
+
+    #[test]
+    fn macos_rejects_malformed_bundle() {
+        let v = MacOsAppAttestVerifier::new();
+        let err = v.verify(b"not json", &[0u8; 32]).unwrap_err();
+        assert!(matches!(err, GateError::AttestationInvalid(_)));
     }
 }

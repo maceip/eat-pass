@@ -4,8 +4,9 @@ attestation-gated, unlinkable authorization tokens.
 
 a server should be able to accept requests *only* from clients running an
 attested build it trusts — without learning *which* client. eat-pass issues
-anonymous, publicly-verifiable tokens (rfc 9474 blind rsa, privacy-pass format)
-where the right to mint a token is gated on a valid [unified-quote](https://github.com/maceip/unified-quote)
+anonymous, publicly-verifiable tokens (**PoMFRIT** blind signatures — MAYO1 +
+VOLE-in-the-head, Privacy Pass–shaped wire format) where the right to mint a
+token is gated on a valid [unified-quote](https://github.com/maceip/unified-quote)
 eat whose measurement the issuer accepts.
 
 it is the open analog of google's *aratea / blindsignauth* anonymous tokens and
@@ -32,8 +33,8 @@ gated on hardware attestation (an eat), not on an account.
   token to a redemption. attestation proves *eligibility*, not *identity*.
 - the **origin** only needs the issuer's public key to gate a route. no callback,
   no per-request attestation, no shared secret.
-- the **token** is a standard blind-rsa signature over a client-chosen nonce —
-  publicly verifiable, offline-checkable, one-time-spendable.
+- the **token** is a PoMFRIT blind signature over a client-chosen nonce —
+  publicly verifiable, offline-checkable, one-time-spendable (~7 KiB on the wire).
 
 ## where it sits in the stack
 
@@ -57,11 +58,15 @@ client runs inside the attested CVM and collects a genuine SEV-SNP vTPM quote
 bound to each request.
 
 ```bash
-# issuer: publishes its key, gates /sign on a real attestation backend
-#   (uq = unified-quote CBOR EAT | azure = SEV-SNP vTPM bundle | azure-tls).
-#   EATPASS_KT_SEED is the stable transparency-log seed clients pin (required).
+# attester: verifies attestation and signs short-lived issuance authorizations.
+#   Policy JSON replaces inline --allow/--class (see policy/examples/).
+#   Optional: EATPASS_POLICY_TRUSTED_PUB + policy.json.sig for signed sidecars.
+export EATPASS_ATTESTER_SEED=$(openssl rand -hex 32)
+eat-pass attester --gate azure --policy policy/examples/uqaz1-example.json
+
+# issuer: PoMFRIT blind-signs tokens after FAEST-128f attester authorization.
 export EATPASS_KT_SEED=$(openssl rand -hex 32)
-eat-pass issuer --gate azure --allow <measurement_hex> --class accepted-builds
+eat-pass issuer --listen 127.0.0.1:8088
 #   prints "kt log pubkey <hex>" → clients AND origins MUST pin it.
 
 # redeemer: the central double-spend authority every origin replica shares.
@@ -69,15 +74,20 @@ eat-pass redeem --listen 127.0.0.1:8100
 
 # origin: gates GET /resource on a valid PrivateToken (RFC 9577), trusting only
 #   issuer keys included in the transparency log signed by the pinned key.
+#   Each 401 issues a fresh challenge with a 32-byte redemption_context (default).
 #   --redeemer is required: double-spend is always enforced centrally, never
 #   origin-locally (which would let a token be spent once per replica).
 eat-pass origin --issuer http://127.0.0.1:8088 \
   --redeemer http://127.0.0.1:8100 --kt-log-pub <hex>
 
-# client (inside the attested CVM): collect a real quote, mint a batch, spend one
+# client (inside the attested CVM): fetch origin challenge, collect quote, mint, present
 eat-pass token --kt-log-pub <hex> \
   --uq-collect "sudo /home/azureuser/unified-quote/target/release/uq azure collect" \
   --count 2 --present http://127.0.0.1:8099/resource
+
+# operator policy tooling
+eat-pass policy validate --file policy/examples/uqaz1-example.json
+eat-pass policy diff --left old.json --right new.json
 
 # verify a captured live azure node to the AMD root, through the gate
 eat-pass verify-azure-tls --cert live-leaf.der --binding <value_x_hex>
@@ -89,11 +99,12 @@ eat-pass verify-azure-tls --cert live-leaf.der --binding <value_x_hex>
 
 ## status
 
-- **m0 / m0.5 — done.** the credential layer: blind-rsa issuance
-  (RSABSSA-SHA384-PSS-Deterministic), the RFC 9578 token + RFC 9577 http flow,
-  `TokenChallenge` origin binding, `token_key_id` pinning, measurement-class
-  anonymity sets, partially-blind policy metadata, rate-limiting, and an epoched
-  double-spend store. green on linux/macos/windows.
+- **m0 / m0.5 — done.** the credential layer: **PoMFRIT** spend tokens
+  (`PoMFRIT-MAYO1-FV1-128`, token type `0x4550`), the Privacy Pass–shaped RFC 9577
+  http flow, `TokenChallenge` origin binding, `token_key_id` pinning,
+  measurement-class anonymity sets, rate-limiting, and an epoched double-spend
+  store. Attester authorization, KT log, and policy sidecars use **FAEST-128f**.
+  Native build requires Linux x86_64 (see `scripts/build-pomfrit-deps.sh`).
 - **m1 — done.** the `eat-pass` binary above (issuer service, client, origin
   example) with an end-to-end test and a cross-platform release.
 - **m2 — done.** the real attestation gate. [`eat-pass-gate`](gate/) verifies a
@@ -131,6 +142,47 @@ eat-pass verify-azure-tls --cert live-leaf.der --binding <value_x_hex>
 the protocol, crypto choice, and crate layout are specified in [`PLAN.md`](PLAN.md),
 grounded in google's decompiled anonymous-tokens surface, chromium/android
 private-access-token sources, and the relevant ietf rfcs.
+
+## literature (incremental hardening)
+
+These papers inform the **policy and challenge layers** only — we did not
+redesign attester/issuer split, coupled mint, or unified-quote verifiers.
+Full mapping: [`docs/literature-pull-in.md`](docs/literature-pull-in.md).
+
+| Topic | Citation | Pull-in |
+|-------|----------|---------|
+| Coupled mint / redemption context | Hanff, Lehmann, Özbay. ACM CCS 2025. [DOI 10.1145/3719027.3765172](https://doi.org/10.1145/3719027.3765172) | Fresh 32-byte `redemption_context` per origin challenge; channel binding in attestation |
+| Privacy Pass formal verification | Ivanova et al. ePrint 2025/2022 | Audit KT pin + key rotation path |
+| Attestation results (EAR) | Fossati et al. [draft-ietf-rats-ear](https://datatracker.ietf.org/doc/draft-ietf-rats-ear/) | `/authorize` returns `AppraisalResult` (EAR-shaped summary) |
+| Reference-value manifests | Ferro & Lioy. ITASEC 2024 (Veraison/CoRIM). [CEUR Vol-3731](https://ceur-ws.org/Vol-3731/paper28.pdf) | Operator JSON policy + optional FAEST-128f `.json.sig` sidecar |
+| Policy validate/simulate/diff | Lin et al. USENIX Security 2025 (Verdict) | `eat-pass policy validate\|simulate\|diff` |
+| CVM trust boundaries | Galanou et al. ACSAC 2025 / [arXiv:2503.08256](https://arxiv.org/abs/2503.08256) | Policy `notes` field for operator trust assumptions |
+| Proof of Cloud (awareness) | Rezabek & Passerat-Palmbach. [arXiv:2510.12469](https://arxiv.org/abs/2510.12469) | Documented in policy notes — quote ≠ location |
+| Android attestation replay | Fahl et al. ASIACCS 2023 | Server nonce = channel binding; reject stale challenges |
+| Mobile app identity | Leierzopf et al. SPICES 2025 (AVBTestKeyInTheWild) | Mobile allow entries use `app_id_hash` only |
+| RATS / EAT / policy shape | RFC 9334, RFC 9711, IETF CoRIM draft | Roles, attestation results, reference values |
+
+## EAT vs EAR (quick)
+
+- **EAT** — raw attestation evidence you collect (`uq collect`, mobile bundle). RFC 9711.
+- **EAR** — verifier **result** after checks (pass/fail, appraisal). IETF draft; eat-pass exposes a small **EAR-shaped** `AppraisalResult` on `/authorize`, not in the PrivateToken.
+
+See [`docs/rats-glossary.md`](docs/rats-glossary.md).
+
+## vs Google PAT and Apple ARC
+
+| | Google PAT | Apple ARC / PAT | eat-pass |
+|---|------------|-----------------|----------|
+| Token crypto | Blind RSA (+ extensions) | Blind RSA (RFC 9474 type 2) | **PoMFRIT** (MAYO1 + VOLE-in-the-head) |
+| Abuse / trust coloring | **Private metadata bit** — issuer-only secret at mint/redeem; can flag bad actors without client visibility | Platform attester + partner issuers; device/account signals | **No private metadata bit** — explicit `VerificationPolicy` + registry + appraisal logs |
+| Attestation gate | Platform / mediator signals | Apple Secure Enclave + iCloud attester | **Hardware EAT** (CVM / mobile) |
+
+**Google private metadata bit:** issuers can embed secret issuance metadata read only at redemption to re-score or throttle clients opaquely ([ePrint 2020/072](https://eprint.iacr.org/2020/072)). eat-pass deliberately does **not** implement PMB — operators revoke via policy/registry instead of hidden issuer coloring.
+
+**Post-quantum:** eat-pass ships PQ spend tokens (PoMFRIT) and FAEST-128f attester
+authorization today — see [`docs/post-quantum-roadmap.md`](docs/post-quantum-roadmap.md).
+
+Full comparison: [`docs/competitive.md`](docs/competitive.md).
 
 ## license
 

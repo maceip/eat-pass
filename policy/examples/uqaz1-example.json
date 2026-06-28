@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "id": "uqaz1-example",
+  "valid_until": "2027-01-01T00:00:00Z",
+  "evidence_profile": "azure-snp-bundle",
+  "class": { "name": "accepted-builds", "version": 1 },
+  "registry_minimum": "recommended",
+  "allow": [
+    {
+      "measurement": "0000000000000000000000000000000000000000000000000000000000000001",
+      "registry_status": "recommended"
+    }
+  ]
+}

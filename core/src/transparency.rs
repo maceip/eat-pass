@@ -26,15 +26,16 @@
 //! list is cheap and the proofs are trivial to audit by hand. The domain
 //! separators below make leaf, chain-step, and signed-head hashing unambiguous.
 
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::faest_sig::{self, signing_key_from_seed};
 use crate::IssuerPublicKey;
 
-const LEAF_DOMAIN: &[u8] = b"eat-pass/kt/leaf/v1\0";
-const HEAD_DOMAIN: &[u8] = b"eat-pass/kt/head/v1\0";
-const STH_DOMAIN: &[u8] = b"eat-pass/kt/sth/v1\0";
+const LEAF_DOMAIN: &[u8] = b"eat-pass/kt/leaf\0";
+const HEAD_DOMAIN: &[u8] = b"eat-pass/kt/head\0";
+const STH_DOMAIN: &[u8] = b"eat-pass/kt/sth\0";
 
 /// Errors from building or checking a key log.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -99,7 +100,7 @@ pub struct SignedHead {
     pub seq: u64,
     /// Chain head hash (hex).
     pub head: String,
-    /// ed25519 signature over `STH_DOMAIN || seq_be || head` (hex, 64 bytes).
+    /// FAEST-128f signature over `STH_DOMAIN || seq_be || head` (standard base64).
     pub sig: String,
 }
 
@@ -179,32 +180,31 @@ impl KeyLog {
     }
 }
 
-/// The log operator's signing key (ed25519). Clients pin [`LogSigner::public`].
+/// The log operator's signing key (FAEST-128f). Clients pin [`LogSigner::public`].
 pub struct LogSigner {
-    sk: SigningKey,
+    sk: faest::FAEST128fSigningKey,
 }
 
 impl LogSigner {
     pub fn from_seed(seed: [u8; 32]) -> Self {
         Self {
-            sk: SigningKey::from_bytes(&seed),
+            sk: signing_key_from_seed(seed).expect("FAEST KT seed"),
         }
     }
 
     pub fn public(&self) -> [u8; 32] {
-        self.sk.verifying_key().to_bytes()
+        faest_sig::public_bytes(&self.sk.verifying_key())
     }
 
-    /// Produce a [`SignedHead`] over the current log head.
     pub fn sign(&self, log: &KeyLog) -> SignedHead {
         let head = log.head();
         let seq = log.records().len().saturating_sub(1) as u64;
         let msg = sth_message(seq, &head);
-        let sig = self.sk.sign(&msg);
+        let sig = faest_sig::sign(&self.sk, &msg);
         SignedHead {
             seq,
             head: hex::encode(head),
-            sig: hex::encode(sig.to_bytes()),
+            sig: base64::engine::general_purpose::STANDARD.encode(sig),
         }
     }
 }
@@ -242,14 +242,12 @@ pub fn verify_log(
     if head != parse_head(signed_head)? {
         return Err(TransparencyError::HeadMismatch);
     }
-    let vk = VerifyingKey::from_bytes(log_pub).map_err(|_| TransparencyError::BadSignature)?;
-    let sig_bytes: [u8; 64] = hex::decode(signed_head.sig.trim())
-        .map_err(|_| TransparencyError::Hex("sig"))?
-        .as_slice()
-        .try_into()
-        .map_err(|_| TransparencyError::Length { field: "sig" })?;
-    let sig = Signature::from_bytes(&sig_bytes);
-    vk.verify(&sth_message(signed_head.seq, &head), &sig)
+    let vk = faest_sig::verifying_key_from_bytes(log_pub)
+        .map_err(|_| TransparencyError::BadSignature)?;
+    let sig_bytes = base64::engine::general_purpose::STANDARD
+        .decode(signed_head.sig.trim())
+        .map_err(|_| TransparencyError::Hex("sig"))?;
+    faest_sig::verify(&vk, &sth_message(signed_head.seq, &head), &sig_bytes)
         .map_err(|_| TransparencyError::BadSignature)?;
     Ok(())
 }
@@ -296,12 +294,12 @@ mod tests {
     use std::sync::OnceLock;
 
     /// A pool of distinct 2048-bit issuer public keys, generated once and reused
-    /// across tests (blind-rsa rejects <2048-bit, and keygen is the slow part).
+    /// across tests (PoMFRIT keygen is the slow part).
     fn key_pool() -> &'static [IssuerPublicKey] {
         static POOL: OnceLock<Vec<IssuerPublicKey>> = OnceLock::new();
         POOL.get_or_init(|| {
             (0..6)
-                .map(|v| Issuer::generate(v as u32 + 1, 2048).unwrap().public())
+                .map(|v| Issuer::generate(v as u32 + 1).public())
                 .collect()
         })
     }

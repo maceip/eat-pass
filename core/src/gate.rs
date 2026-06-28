@@ -23,6 +23,7 @@
 use std::collections::HashSet;
 
 #[cfg(any(test, feature = "dev-sim"))]
+#[cfg(any(test, feature = "dev-sim"))]
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
@@ -67,9 +68,8 @@ impl Measurement {
 /// Gating on a *class* (e.g. "accepted-builds-v1") rather than an exact
 /// `value_x` widens the anonymity set to everyone running any build in the
 /// class. The class `version` lets the accepted set roll forward without
-/// silently changing what a given class name means. Paired with
-/// [`crate::pbrsa`], the class name becomes auditable public metadata on the
-/// issued token.
+/// silently changing what a given class name means. The class label is auditable
+/// public metadata on issued tokens when bound into attester authorization.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MeasurementClass {
     pub name: String,
@@ -312,7 +312,7 @@ pub fn issue_gated<V: AttestationVerifier>(
     req: &crate::SignRequest,
     eat: &[u8],
 ) -> Result<crate::SignResponse, GateError> {
-    let binding = crate::binding_of(&req.blinded);
+    let binding = crate::binding_of(&req.body.blinded);
     if binding != req.binding {
         return Err(GateError::BindingMismatch);
     }
@@ -332,13 +332,13 @@ pub fn issue_gated_with_limit<V: AttestationVerifier, R: RateLimiter>(
     eat: &[u8],
     limiter: &R,
 ) -> Result<crate::SignResponse, GateError> {
-    let binding = crate::binding_of(&req.blinded);
+    let binding = crate::binding_of(&req.body.blinded);
     if binding != req.binding {
         return Err(GateError::BindingMismatch);
     }
     let measurement = verifier.verify(eat, &binding)?;
     limiter
-        .try_consume(&measurement.rate_limit_id(), req.blinded.len() as u32)
+        .try_consume(&measurement.rate_limit_id(), req.body.blinded.len() as u32)
         .map_err(|e| match e {
             RateLimitError::Exceeded => GateError::QuotaExceeded,
             // Fail-closed: a backend outage denies issuance rather than letting
@@ -347,32 +347,6 @@ pub fn issue_gated_with_limit<V: AttestationVerifier, R: RateLimiter>(
         })?;
     issuer
         .blind_sign(req)
-        .map_err(|e| GateError::Unknown(e.to_string()))
-}
-
-/// Gate + issue under the partially-blind path (E.5 + E.6): verify the eat,
-/// confirm its measurement is in `verifier`'s accepted class, then blind-sign
-/// the blinded messages under that class as auditable public metadata. The
-/// origin later sees only the class, never the exact `value_x`.
-pub fn issue_gated_pbrsa<V: AttestationVerifier>(
-    pb_issuer: &crate::pbrsa::PbIssuer,
-    verifier: &V,
-    blinded: &[blind_rsa_signatures::BlindMessage],
-    binding: &[u8; 32],
-    class: &MeasurementClass,
-    eat: &[u8],
-) -> Result<Vec<blind_rsa_signatures::BlindSignature>, GateError> {
-    let recomputed = crate::binding_of(blinded);
-    if &recomputed != binding {
-        return Err(GateError::BindingMismatch);
-    }
-    let measurement = verifier.verify(eat, binding)?;
-    if !class.contains(&measurement.value_x) {
-        return Err(GateError::MeasurementNotAllowed);
-    }
-    let policy = crate::pbrsa::PolicyClass::new(class.policy_label());
-    pb_issuer
-        .blind_sign(blinded, &policy)
         .map_err(|e| GateError::Unknown(e.to_string()))
 }
 
