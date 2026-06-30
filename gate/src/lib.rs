@@ -262,12 +262,31 @@ impl AttestationVerifier for AzureTlsVerifier {
 }
 
 /// Verifies a Linux or Windows TPM2 client bundle (desktop agent, no CVM).
-#[derive(Clone, Copy, Default)]
-pub struct DesktopTpmVerifier;
+///
+/// With no policy it authenticates the AK quote + channel binding only (the
+/// agent binary identity is the self-reported `build_digest`). Configured via
+/// [`DesktopTpmVerifier::with_policy`], it additionally requires a
+/// hardware-measured IMA log and/or a known-good boot-aggregate.
+#[derive(Clone, Default)]
+pub struct DesktopTpmVerifier {
+    require_ima: bool,
+    boot_aggregates: Vec<[u8; 32]>,
+}
 
 impl DesktopTpmVerifier {
     pub fn new() -> Self {
-        Self
+        Self::default()
+    }
+
+    /// Configure the IMA / boot-aggregate posture from operator policy.
+    /// `require_ima` rejects channel-bound-only bundles; a non-empty
+    /// `boot_aggregates` allowlist requires the quoted boot state (PCR 0-9) to
+    /// match a known-good fingerprint.
+    pub fn with_policy(require_ima: bool, boot_aggregates: Vec<[u8; 32]>) -> Self {
+        Self {
+            require_ima,
+            boot_aggregates,
+        }
     }
 }
 
@@ -283,6 +302,26 @@ impl AttestationVerifier for DesktopTpmVerifier {
                 "desktop tpm verdict: {}",
                 verdict.verdict
             )));
+        }
+        if self.require_ima && !verdict.ima_verified {
+            return Err(GateError::AttestationInvalid(
+                "policy requires IMA-measured attestation but bundle is channel-bound only".into(),
+            ));
+        }
+        if !self.boot_aggregates.is_empty() {
+            let matches = verdict
+                .boot_aggregate
+                .as_deref()
+                .and_then(|h| hex::decode(h).ok())
+                .map(|b| {
+                    self.boot_aggregates
+                        .iter()
+                        .any(|a| a.as_slice() == b.as_slice())
+                })
+                .unwrap_or(false);
+            if !matches {
+                return Err(GateError::MeasurementNotAllowed);
+            }
         }
         let value_x = hex::decode(&verdict.identity_hash)
             .map_err(|e| GateError::AttestationInvalid(format!("identity_hash: {e}")))?;

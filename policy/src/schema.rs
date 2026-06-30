@@ -108,6 +108,17 @@ pub struct VerificationPolicy {
     #[serde(default = "default_registry_minimum")]
     pub registry_minimum: RegistryMinimum,
     pub allow: Vec<AllowEntry>,
+    /// Desktop-TPM only: require the bundle to carry a hardware-measured IMA log
+    /// (replayed into PCR 10) proving the agent binary actually executed, rather
+    /// than a self-reported `build_digest`. Honest default is `false` (the tier
+    /// label reflects whether IMA was proven); operators set `true` to refuse
+    /// channel-bound-only desktop attestations.
+    #[serde(default)]
+    pub require_ima: bool,
+    /// Desktop-TPM only: allowlist of known-good boot-aggregate fingerprints
+    /// (hex sha256 over PCR 0-9). Empty accepts any boot state.
+    #[serde(default)]
+    pub boot_aggregates: Vec<String>,
     /// Operator trust-boundary notes (surfaced in logs and appraisal results).
     #[serde(default)]
     pub notes: Option<String>,
@@ -179,7 +190,33 @@ impl VerificationPolicy {
                 }
             }
         }
+        if (self.require_ima || !self.boot_aggregates.is_empty())
+            && self.evidence_profile != EvidenceProfile::DesktopTpmClient
+        {
+            return Err(PolicyError::Invalid(
+                "require_ima/boot_aggregates are only valid for the desktop-tpm profile".into(),
+            ));
+        }
+        for (i, ba) in self.boot_aggregates.iter().enumerate() {
+            if hex::decode(ba.trim()).map(|v| v.len()).unwrap_or(0) != 32 {
+                return Err(PolicyError::Invalid(format!(
+                    "boot_aggregates[{i}] must be 32-byte hex (sha256 over PCR 0-9)"
+                )));
+            }
+        }
         Ok(())
+    }
+
+    /// Parsed boot-aggregate allowlist (32-byte fingerprints).
+    pub fn boot_aggregates_bytes(&self) -> Vec<[u8; 32]> {
+        self.boot_aggregates
+            .iter()
+            .filter_map(|s| {
+                hex::decode(s.trim())
+                    .ok()
+                    .and_then(|v| <[u8; 32]>::try_from(v.as_slice()).ok())
+            })
+            .collect()
     }
 
     pub fn is_expired(&self, now: DateTime<Utc>) -> bool {
