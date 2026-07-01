@@ -9,22 +9,30 @@ pub mod gate;
 pub mod ratelimit;
 mod serdehelp;
 pub mod spend;
+#[cfg(feature = "pomfrit")]
 pub mod transparency;
 
+#[cfg(feature = "pomfrit")]
 use eat_pass_pomfrit::{
     self as pomfrit, binding_of as pomfrit_binding_of, Scheme, SignRequest as PomfritSignBody,
     SignResponse as PomfritSignResponse, SpendToken, TOKEN_TYPE,
 };
+#[cfg(feature = "pomfrit")]
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "pomfrit")]
 use sha2::{Digest, Sha256};
 
+#[cfg(feature = "pomfrit")]
 pub use pomfrit::ALG as POMFRIT_ALG;
+#[cfg(feature = "pomfrit")]
 pub use pomfrit::TOKEN_TYPE as TOKEN_TYPE_POMFRIT;
 
+#[cfg(feature = "pomfrit")]
 const BINDING_DOMAIN: &[u8] = b"eat-pass/binding\0";
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[cfg(feature = "pomfrit")]
     #[error("pomfrit: {0}")]
     Pomfrit(#[from] pomfrit::PomfritError),
     #[error("faest: {0}")]
@@ -48,8 +56,10 @@ pub enum Error {
 }
 
 /// PoMFRIT profile identifier published at `/keys`.
+#[cfg(feature = "pomfrit")]
 pub const ALG: &str = pomfrit::ALG;
 
+#[cfg(feature = "pomfrit")]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenChallenge {
     pub token_type: u16,
@@ -59,6 +69,7 @@ pub struct TokenChallenge {
     pub origin_info: String,
 }
 
+#[cfg(feature = "pomfrit")]
 impl TokenChallenge {
     pub fn new(issuer_name: impl Into<String>, origin_info: impl Into<String>) -> Self {
         Self {
@@ -140,20 +151,24 @@ impl TokenChallenge {
     }
 }
 
+#[cfg(feature = "pomfrit")]
 pub fn binding_of(blinded: &[Vec<u8>]) -> [u8; 32] {
     pomfrit_binding_of(blinded)
 }
 
+#[cfg(feature = "pomfrit")]
 pub(crate) fn random_nonce() -> Result<[u8; 32], Error> {
     let mut n = [0u8; 32];
     getrandom::getrandom(&mut n).map_err(|e| Error::Rng(e.to_string()))?;
     Ok(n)
 }
 
+#[cfg(feature = "pomfrit")]
 pub fn token_key_id(pk_bytes: &[u8]) -> [u8; 32] {
     Scheme::token_key_id(pk_bytes)
 }
 
+#[cfg(feature = "pomfrit")]
 #[derive(Clone, Serialize, Deserialize)]
 pub struct IssuerPublicKey {
     pub key_version: u32,
@@ -162,6 +177,7 @@ pub struct IssuerPublicKey {
     pub key: Vec<u8>,
 }
 
+#[cfg(feature = "pomfrit")]
 impl IssuerPublicKey {
     pub fn token_key_id(&self) -> Result<[u8; 32], Error> {
         Ok(token_key_id(&self.key))
@@ -172,6 +188,7 @@ impl IssuerPublicKey {
     }
 }
 
+#[cfg(feature = "pomfrit")]
 pub fn check_key_consistency(pinned: &[u8; 32], pk: &IssuerPublicKey) -> Result<(), Error> {
     if &pk.token_key_id()? == pinned {
         Ok(())
@@ -180,12 +197,14 @@ pub fn check_key_consistency(pinned: &[u8; 32], pk: &IssuerPublicKey) -> Result<
     }
 }
 
+#[cfg(feature = "pomfrit")]
 pub struct Issuer {
     sk: Vec<u8>,
     pk: Vec<u8>,
     key_version: u32,
 }
 
+#[cfg(feature = "pomfrit")]
 impl Issuer {
     pub fn generate(key_version: u32) -> Self {
         let scheme = Scheme::new();
@@ -222,6 +241,7 @@ impl Issuer {
     }
 }
 
+#[cfg(feature = "pomfrit")]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SignRequest {
     pub token_challenge: TokenChallenge,
@@ -230,25 +250,30 @@ pub struct SignRequest {
     pub body: PomfritSignBody,
 }
 
+#[cfg(feature = "pomfrit")]
 impl SignRequest {
     pub fn binding(&self) -> [u8; 32] {
         self.body.binding
     }
 }
 
+#[cfg(feature = "pomfrit")]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SignResponse {
     #[serde(with = "serdehelp::b64vec_nested")]
     pub blind_sigs: Vec<Vec<u8>>,
 }
 
+#[cfg(feature = "pomfrit")]
 pub type Token = SpendToken;
 
+#[cfg(feature = "pomfrit")]
 pub struct PendingTokens {
     inner: pomfrit::PendingMint,
     pk: IssuerPublicKey,
 }
 
+#[cfg(feature = "pomfrit")]
 impl PendingTokens {
     pub fn len(&self) -> usize {
         self.inner.len()
@@ -258,8 +283,10 @@ impl PendingTokens {
     }
 }
 
+#[cfg(feature = "pomfrit")]
 pub struct Client;
 
+#[cfg(feature = "pomfrit")]
 impl Client {
     pub fn begin(
         pk: &IssuerPublicKey,
@@ -285,6 +312,7 @@ impl Client {
     }
 }
 
+#[cfg(feature = "pomfrit")]
 impl PendingTokens {
     pub fn finalize(self, pk: &IssuerPublicKey, resp: &SignResponse) -> Result<Vec<Token>, Error> {
         let scheme = Scheme::new();
@@ -297,11 +325,13 @@ impl PendingTokens {
     }
 }
 
+#[cfg(feature = "pomfrit")]
 pub struct Verifier {
     pub pk: IssuerPublicKey,
     epk: Vec<u8>,
 }
 
+#[cfg(feature = "pomfrit")]
 impl Verifier {
     pub fn new(pk: IssuerPublicKey) -> Self {
         let epk = Scheme::new().expand_pk(&pk.key);
@@ -325,6 +355,7 @@ impl Verifier {
     }
 }
 
+#[cfg(feature = "pomfrit")]
 pub mod http {
     use super::{IssuerPublicKey, Token};
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64URL, Engine};

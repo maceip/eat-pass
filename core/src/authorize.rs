@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::faest_sig::{self, signing_key_from_seed};
 use crate::gate::{AttestationVerifier, GateError, Measurement};
+#[cfg(feature = "pomfrit")]
 use crate::ratelimit::{RateLimitError, RateLimiter};
 
 pub type AttesterVerifyingKey = FAEST128fVerificationKey;
@@ -167,6 +168,7 @@ pub fn attester_pubkey_from_hex(hex_str: &str) -> Result<AttesterVerifyingKey, G
 }
 
 /// Issuer path: verify authorization, enforce quota, blind-sign.
+#[cfg(feature = "pomfrit")]
 pub fn issue_authorized_with_limit<R: RateLimiter>(
     issuer: &crate::Issuer,
     attester_pub: &AttesterVerifyingKey,
@@ -204,7 +206,7 @@ pub fn issue_authorized_with_limit<R: RateLimiter>(
         .map_err(|e| GateError::Unknown(e.to_string()))
 }
 
-#[cfg(any(test, feature = "dev-sim"))]
+#[cfg(feature = "dev-sim")]
 pub mod dev {
     use super::*;
     use crate::gate::{DevAttester, DevVerifier, MeasurementClass};
@@ -223,7 +225,7 @@ pub mod dev {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "pomfrit", feature = "dev-sim"))]
 mod tests {
     use super::*;
     use crate::gate::{DevAttester, DevVerifier, Measurement};

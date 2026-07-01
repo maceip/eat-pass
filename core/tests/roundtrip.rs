@@ -1,6 +1,6 @@
 // Exercises the full protocol without a TEE via the dev-sim attestation
-// stand-ins, which are compiled only under this feature. Empty otherwise.
-#![cfg(feature = "dev-sim")]
+// stand-ins and the PoMFRIT token stack. Empty otherwise.
+#![cfg(all(feature = "dev-sim", feature = "pomfrit"))]
 
 use eat_pass_core::gate::{
     issue_gated, issue_gated_with_limit, DevAttester, DevVerifier, GateError, Measurement,

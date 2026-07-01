@@ -6,6 +6,7 @@
 //! [`http::parse_authorization`], asserting they (a) never panic and (b) hold
 //! the roundtrip invariant for anything they accept. No nightly toolchain
 //! required, so it runs in the normal `cargo test` matrix on every platform.
+#![cfg(feature = "pomfrit")]
 
 use eat_pass_core::{http, Token};
 

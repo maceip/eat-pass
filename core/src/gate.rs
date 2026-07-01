@@ -22,14 +22,14 @@
 
 use std::collections::HashSet;
 
-#[cfg(any(test, feature = "dev-sim"))]
-#[cfg(any(test, feature = "dev-sim"))]
+#[cfg(feature = "dev-sim")]
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "pomfrit")]
 use crate::ratelimit::{RateLimitError, RateLimiter};
 
-#[cfg(any(test, feature = "dev-sim"))]
+#[cfg(feature = "dev-sim")]
 const DEV_EAT_DOMAIN: &[u8] = b"eat-pass/v0/dev-eat\0";
 
 /// What an attestation proves: a platform + a measurement (the build identity,
@@ -165,7 +165,7 @@ impl<V: AttestationVerifier> AttestationVerifier for ClassGated<V> {
     }
 }
 
-#[cfg(any(test, feature = "dev-sim"))]
+#[cfg(feature = "dev-sim")]
 fn dev_signed_bytes(m: &Measurement, binding: &[u8; 32]) -> Vec<u8> {
     let mut v = Vec::with_capacity(DEV_EAT_DOMAIN.len() + m.platform.len() + m.value_x.len() + 34);
     v.extend_from_slice(DEV_EAT_DOMAIN);
@@ -178,7 +178,7 @@ fn dev_signed_bytes(m: &Measurement, binding: &[u8; 32]) -> Vec<u8> {
 }
 
 /// Wire form of a dev attestation.
-#[cfg(any(test, feature = "dev-sim"))]
+#[cfg(feature = "dev-sim")]
 #[derive(Clone, Serialize, Deserialize)]
 struct DevEat {
     platform: String,
@@ -193,15 +193,15 @@ struct DevEat {
 /// A stand-in attester for tests/local: signs `(measurement, binding)` with an
 /// ed25519 key. The real attester is a TEE producing a `unified-quote` EAT.
 ///
-/// Compiled only under `--features dev-sim` (and in tests). It is never present
+/// Compiled only under `--features dev-sim`. It is never present
 /// in a shipped binary, so issuance can never be gated on a dev statement in
 /// production — there is no flag, env var, or default that enables it.
-#[cfg(any(test, feature = "dev-sim"))]
+#[cfg(feature = "dev-sim")]
 pub struct DevAttester {
     sk: SigningKey,
 }
 
-#[cfg(any(test, feature = "dev-sim"))]
+#[cfg(feature = "dev-sim")]
 impl DevAttester {
     pub fn generate() -> Result<Self, GateError> {
         let mut seed = [0u8; 32];
@@ -239,14 +239,14 @@ impl DevAttester {
 /// Verifies dev eats against a trusted attester key and an accepted
 /// [`MeasurementClass`] (the anonymity set, E.5).
 ///
-/// Compiled only under `--features dev-sim` (and in tests) — see [`DevAttester`].
-#[cfg(any(test, feature = "dev-sim"))]
+/// Compiled only under `--features dev-sim` — see [`DevAttester`].
+#[cfg(feature = "dev-sim")]
 pub struct DevVerifier {
     vk: VerifyingKey,
     class: MeasurementClass,
 }
 
-#[cfg(any(test, feature = "dev-sim"))]
+#[cfg(feature = "dev-sim")]
 impl DevVerifier {
     /// Build a verifier from a flat allowlist (an anonymous class "default@v1").
     pub fn new(
@@ -272,7 +272,7 @@ impl DevVerifier {
     }
 }
 
-#[cfg(any(test, feature = "dev-sim"))]
+#[cfg(feature = "dev-sim")]
 impl AttestationVerifier for DevVerifier {
     fn verify(&self, eat: &[u8], expected_binding: &[u8; 32]) -> Result<Measurement, GateError> {
         let eat: DevEat = serde_json::from_slice(eat)
@@ -306,6 +306,7 @@ impl AttestationVerifier for DevVerifier {
 /// actual blinded messages (so a client cannot misreport it), requires the eat
 /// to commit to that binding and carry an allowed measurement, and only then
 /// blind-signs.
+#[cfg(feature = "pomfrit")]
 pub fn issue_gated<V: AttestationVerifier>(
     issuer: &crate::Issuer,
     verifier: &V,
@@ -325,6 +326,7 @@ pub fn issue_gated<V: AttestationVerifier>(
 /// Like [`issue_gated`] but enforces a per-attestation issuance quota (E.7)
 /// before signing. The limiter is keyed on [`Measurement::rate_limit_id`] — a
 /// hash of the build, never an identity — and charged the batch size.
+#[cfg(feature = "pomfrit")]
 pub fn issue_gated_with_limit<V: AttestationVerifier, R: RateLimiter>(
     issuer: &crate::Issuer,
     verifier: &V,

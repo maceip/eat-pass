@@ -12,10 +12,12 @@ name = "eat_pass_core"
 path = "src/lib.rs"
 
 [features]
+default = ["pomfrit"]
+pomfrit = ["dep:eat-pass-pomfrit"]
 dev-sim = ["dep:ed25519-dalek"]
 
 [dependencies]
-eat-pass-pomfrit = { path = "../pomfrit" }
+eat-pass-pomfrit = { path = "../pomfrit", optional = true }
 faest = { workspace = true }
 ed25519-dalek = { version = "2", optional = true }
 serde = { workspace = true }

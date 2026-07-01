@@ -12,7 +12,7 @@ name = "eat_pass_gate"
 path = "src/lib.rs"
 
 [dependencies]
-eat-pass-core = { path = "../core" }
+eat-pass-core = { path = "../core", default-features = false }
 # The portable unified-quote verifier. sev-snp covers the live Azure CVM node;
 # tdx is cheap to include (no extra heavy deps) and covers Intel TDX / GCP once
 # unblocked. nitro is intentionally left off here to keep the gate lean.

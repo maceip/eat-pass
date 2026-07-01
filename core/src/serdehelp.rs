@@ -36,6 +36,7 @@ pub mod b64vec {
 }
 
 /// `Vec<Vec<u8>>` <-> JSON array of base64 strings.
+#[cfg(feature = "pomfrit")]
 pub mod b64vec_nested {
     use super::*;
     use serde::Serialize;
