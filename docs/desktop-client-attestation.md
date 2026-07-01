@@ -70,10 +70,10 @@ eat-pass token --attest-mode desktop-tpm \
   ...
 ```
 
-Or pass a pre-collected bundle:
+Or pass evidence bytes through the primary evidence input:
 
 ```bash
-eat-pass token --attest-mode desktop-bundle --desktop-bundle bundle.json ...
+eat-pass token --evidence bundle.json ...
 ```
 
 ## SDKs

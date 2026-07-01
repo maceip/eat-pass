@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "id": "aws-nitro-uq-example",
+  "valid_until": "2027-01-01T00:00:00Z",
+  "evidence_profile": "uq-eat",
+  "class": { "name": "accepted-builds", "version": 1 },
+  "registry_minimum": "recommended",
+  "min_tier": "silicon-cvm",
+  "allowed_tier_details": ["nitro"],
+  "allow": [
+    {
+      "measurement": "5d108f53301a3f6e364ae80c060cbcb134c1a195a223d6f9f027c0b4dc5005287d5d2dd298f74304b5148048e626d599",
+      "registry_status": "recommended"
+    }
+  ],
+  "notes": "Live AWS Nitro smoke value_x from uq check https://3.17.186.5/ on 2026-07-01. Replace measurement for a different Nitro enclave build."
+}

@@ -24,6 +24,8 @@ eat-pass token --kt-log-pub "$KT_LOG_PUB" \
 ```
 
 The attester only signs when `binding` matches the hardware quote.
+For a collector managed outside the token command, pass its bytes with
+`--evidence FILE` or `--evidence -`.
 
 ## Fail cases to show live
 

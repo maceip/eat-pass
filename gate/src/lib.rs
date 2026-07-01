@@ -340,7 +340,7 @@ impl AttestationVerifier for DesktopTpmVerifier {
         }
         let value_x = hex::decode(&verdict.identity_hash)
             .map_err(|e| GateError::AttestationInvalid(format!("identity_hash: {e}")))?;
-        Ok(Measurement::new(verdict.platform, value_x))
+        Ok(Measurement::new(verdict.platform, value_x).with_ima_verified(verdict.ima_verified))
     }
 }
 
@@ -492,9 +492,52 @@ mod tests {
     }
 
     #[test]
+    fn active_verifier_outputs_have_policy_shape() {
+        let cases = [
+            ("sev-snp", false, "silicon-cvm"),
+            ("tdx", false, "silicon-cvm"),
+            ("nitro", false, "silicon-cvm"),
+            ("azure-sev-snp-vtpm", false, "silicon-cvm"),
+            ("linux-tpm-client", false, "device-attested"),
+            ("linux-tpm-client", true, "device-attested"),
+            ("windows-tpm-client", false, "device-attested"),
+            ("macos-app-attest", false, "device-attested"),
+            ("ios-app-attest", false, "device-attested"),
+            ("android-key-attestation", false, "device-attested"),
+        ];
+
+        for (platform, ima_verified, want_tier) in cases {
+            let measurement =
+                Measurement::new(platform, vec![0xAA; 32]).with_ima_verified(ima_verified);
+            let (tier, detail) = unified_quote::tiers::assurance_tier(
+                &measurement.platform,
+                measurement.ima_verified,
+            );
+            assert_eq!(tier, want_tier, "{platform}");
+            assert!(!detail.is_empty(), "{platform}");
+            assert_eq!(measurement.value_x.len(), 32);
+        }
+    }
+
+    #[test]
     fn macos_rejects_malformed_bundle() {
         let v = MacOsAppAttestVerifier::new();
         let err = v.verify(b"not json", &[0u8; 32]).unwrap_err();
         assert!(matches!(err, GateError::AttestationInvalid(_)));
+    }
+
+    #[test]
+    fn mobile_verifiers_reject_malformed_bundles() {
+        let binding = [0u8; 32];
+        let android = AndroidKeyAttestationVerifier::new();
+        let ios = IosAppAttestVerifier::new();
+        assert!(matches!(
+            android.verify(b"not json", &binding),
+            Err(GateError::AttestationInvalid(_))
+        ));
+        assert!(matches!(
+            ios.verify(b"not json", &binding),
+            Err(GateError::AttestationInvalid(_))
+        ));
     }
 }

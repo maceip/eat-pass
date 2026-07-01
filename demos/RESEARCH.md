@@ -171,7 +171,7 @@ eat-pass origin --issuer http://127.0.0.1:8088 --redeemer http://127.0.0.1:8100 
 
 # terminal B — inside CVM
 eat-pass token --kt-log-pub <hex> \
-  --uq-collect "uq azure collect" \
+  --evidence /path/to/bundle.json \
   --present http://127.0.0.1:8099/resource
 
 # terminal C — laptop (no TEE)

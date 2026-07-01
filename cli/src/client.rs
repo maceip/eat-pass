@@ -3,28 +3,35 @@
 //! Fetches the issuer key, blinds token inputs, obtains an attester-signed
 //! authorization over the channel binding, calls `/sign`, finalizes tokens.
 
+use std::io::Read;
+use std::path::PathBuf;
+
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use eat_pass_core::transparency::{verify_consistency, verify_inclusion, verify_log, SignedHead};
 use eat_pass_core::{http, Client, IssuerPublicKey, SignResponse, TokenChallenge};
 
 use crate::wire::{AuthorizeBody, AuthorizeResponse, KtResponse, SignBody};
 
-/// How the client produces attestation evidence bound to the channel binding.
-pub enum Attest {
+pub const DEFAULT_UQ_COLLECT_CMD: &str = "uq azure collect";
+pub const DEFAULT_DESKTOP_TPM_COLLECT_SCRIPT: &str = "scripts/collect-desktop-tpm.sh";
+
+/// How the client obtains attestation evidence bound to the mint binding.
+pub enum EvidenceInput {
+    /// Pre-collected evidence bytes from a file, or stdin when the path is `-`.
+    File(PathBuf),
     /// Real Azure SEV-SNP vTPM bundle via `uq azure collect --value-x <binding>`.
-    Azure { cmd: String },
+    AzureCommand { cmd: String },
     /// Linux/Windows TPM2 via `scripts/collect-desktop-tpm.sh`.
     DesktopTpm {
         script: String,
         build_digest: String,
     },
-    /// Pre-collected desktop evidence JSON (TPM bundle or macOS App Attest).
-    DesktopBundle { path: std::path::PathBuf },
 }
 
-fn collect_eat(attest: &Attest, binding: &[u8; 32]) -> anyhow::Result<Vec<u8>> {
-    match attest {
-        Attest::Azure { cmd } => {
+pub fn collect_evidence(input: &EvidenceInput, binding: &[u8; 32]) -> anyhow::Result<Vec<u8>> {
+    match input {
+        EvidenceInput::File(path) => read_evidence_file(path),
+        EvidenceInput::AzureCommand { cmd } => {
             let out = tempfile_path("eatpass-azure-bundle", "json")?;
             let mut argv = cmd.split_whitespace().collect::<Vec<_>>();
             if argv.is_empty() {
@@ -45,7 +52,7 @@ fn collect_eat(attest: &Attest, binding: &[u8; 32]) -> anyhow::Result<Vec<u8>> {
             let _ = std::fs::remove_file(&out);
             Ok(bytes)
         }
-        Attest::DesktopTpm {
+        EvidenceInput::DesktopTpm {
             script,
             build_digest,
         } => {
@@ -64,9 +71,18 @@ fn collect_eat(attest: &Attest, binding: &[u8; 32]) -> anyhow::Result<Vec<u8>> {
             }
             std::fs::read(&out).map_err(|e| anyhow::anyhow!("read {out}: {e}"))
         }
-        Attest::DesktopBundle { path } => std::fs::read(path)
-            .map_err(|e| anyhow::anyhow!("read desktop bundle {}: {e}", path.display())),
     }
+}
+
+fn read_evidence_file(path: &PathBuf) -> anyhow::Result<Vec<u8>> {
+    if path.as_os_str() == "-" {
+        let mut bytes = Vec::new();
+        std::io::stdin()
+            .read_to_end(&mut bytes)
+            .map_err(|e| anyhow::anyhow!("read evidence from stdin: {e}"))?;
+        return Ok(bytes);
+    }
+    std::fs::read(path).map_err(|e| anyhow::anyhow!("read evidence {}: {e}", path.display()))
 }
 
 fn tempfile_path(prefix: &str, ext: &str) -> anyhow::Result<String> {
@@ -114,7 +130,7 @@ fn http_client(insecure_tls: bool) -> anyhow::Result<reqwest::Client> {
 pub async fn run(
     issuer_url: String,
     attester_url: String,
-    attest: Attest,
+    evidence: EvidenceInput,
     count: usize,
     issuer_name: String,
     origin_info: String,
@@ -195,7 +211,7 @@ pub async fn run(
         Client::begin(&pk, &challenge, count).map_err(|e| anyhow::anyhow!("begin: {e}"))?;
 
     let binding = req.binding();
-    let eat = collect_eat(&attest, &binding)?;
+    let eat = collect_evidence(&evidence, &binding)?;
 
     let auth_body = AuthorizeBody {
         eat_b64: B64.encode(eat),

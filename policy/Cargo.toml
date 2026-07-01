@@ -16,5 +16,6 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 hex = { workspace = true }
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
+unified-quote = { git = "https://github.com/maceip/unified-quote", rev = "fb4bb069528b1a5d586c10332693334e48e76a1c", default-features = false }
 
 [dev-dependencies]

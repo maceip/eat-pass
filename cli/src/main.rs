@@ -79,16 +79,16 @@ enum Cmd {
         issuer: String,
         #[arg(long, default_value = "http://127.0.0.1:8087")]
         attester: String,
+        /// Pre-collected evidence file. Use `-` to read from stdin.
+        #[arg(long, value_name = "FILE")]
+        evidence: Option<PathBuf>,
         /// Attestation collector: `azure` (default), `desktop-tpm`, or `desktop-bundle`.
         #[arg(long, default_value = "azure")]
         attest_mode: String,
-        #[arg(
-            long,
-            default_value = "sudo /home/azureuser/unified-quote/target/release/uq azure collect"
-        )]
-        uq_collect: String,
-        #[arg(long, default_value = "scripts/collect-desktop-tpm.sh")]
-        desktop_collect: String,
+        #[arg(long)]
+        uq_collect: Option<String>,
+        #[arg(long)]
+        desktop_collect: Option<String>,
         /// sha256(agent binary) hex — required for `desktop-tpm` mode.
         #[arg(long)]
         build_digest: Option<String>,
@@ -320,6 +320,7 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Token {
             issuer,
             attester,
+            evidence,
             attest_mode,
             uq_collect,
             desktop_collect,
@@ -333,27 +334,32 @@ async fn main() -> anyhow::Result<()> {
             kt_known_head,
             insecure_tls,
         } => {
-            let attest = match attest_mode.as_str() {
-                "azure" => client::Attest::Azure { cmd: uq_collect },
-                "desktop-tpm" => client::Attest::DesktopTpm {
-                    script: desktop_collect,
-                    build_digest: build_digest.ok_or_else(|| {
-                        anyhow::anyhow!("--build-digest required for desktop-tpm attest mode")
-                    })?,
-                },
-                "desktop-bundle" => client::Attest::DesktopBundle {
-                    path: desktop_bundle.ok_or_else(|| {
-                        anyhow::anyhow!("--desktop-bundle required for desktop-bundle attest mode")
-                    })?,
-                },
-                other => anyhow::bail!(
-                    "unknown --attest-mode '{other}' (expected azure, desktop-tpm, desktop-bundle)"
-                ),
+            let evidence = if let Some(path) = evidence.or(desktop_bundle) {
+                client::EvidenceInput::File(path)
+            } else {
+                match attest_mode.as_str() {
+                    "azure" => client::EvidenceInput::AzureCommand {
+                        cmd: uq_collect.unwrap_or_else(|| client::DEFAULT_UQ_COLLECT_CMD.into()),
+                    },
+                    "desktop-tpm" => client::EvidenceInput::DesktopTpm {
+                        script: desktop_collect
+                            .unwrap_or_else(|| client::DEFAULT_DESKTOP_TPM_COLLECT_SCRIPT.into()),
+                        build_digest: build_digest.ok_or_else(|| {
+                            anyhow::anyhow!("--build-digest required for desktop-tpm attest mode")
+                        })?,
+                    },
+                    "desktop-bundle" => {
+                        anyhow::bail!("--desktop-bundle requires a file path; prefer --evidence FILE")
+                    }
+                    other => anyhow::bail!(
+                        "unknown --attest-mode '{other}' (expected azure, desktop-tpm, desktop-bundle)"
+                    ),
+                }
             };
             client::run(
                 issuer,
                 attester,
-                attest,
+                evidence,
                 count,
                 issuer_name,
                 origin_info,

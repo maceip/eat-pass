@@ -14,7 +14,7 @@ mod sign;
 pub use appraise::{appraise, AppraisalClaims, AppraisalError, AppraisalResult, CheckId};
 pub use diff::{diff, PolicyDiff};
 pub use gated::PolicyGated;
-pub use schema::{EvidenceProfile, PolicyError, RegistryMinimum, VerificationPolicy};
+pub use schema::{EvidenceProfile, PolicyError, RegistryMinimum, TrustTier, VerificationPolicy};
 pub use sign::{
     load_verified, sidecar_path, sign_policy_file, signing_key_from_env, trusted_pubs_from_env,
 };
@@ -56,4 +56,38 @@ pub fn load_for_attester(
         )));
     }
     Ok(policy)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_for_attester_rejects_gate_profile_mismatch() {
+        let path = std::env::temp_dir().join(format!(
+            "eat-pass-policy-mismatch-{}-{}.json",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::write(
+            &path,
+            r#"{
+              "version": 1,
+              "id": "azure-policy",
+              "evidence_profile": "azure-snp-bundle",
+              "class": { "name": "accepted-builds", "version": 1 },
+              "allow": [
+                {
+                  "measurement": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        load_for_attester(&path, "azure", &[]).unwrap();
+        let err = load_for_attester(&path, "desktop-tpm", &[]).unwrap_err();
+        assert!(err.to_string().contains("does not match --gate"));
+        let _ = std::fs::remove_file(path);
+    }
 }

@@ -3,11 +3,13 @@
   "id": "desktop-agent-macos-dev",
   "evidence_profile": "macos-app-attest",
   "class": { "name": "desktop-agents", "version": 1 },
+  "min_tier": "device-attested",
+  "allowed_tier_details": ["app-attest"],
   "allow": [
     {
-      "app_id_hash": "REPLACE_WITH_APP_ID_HASH_HEX",
+      "app_id_hash": "3333333333333333333333333333333333333333333333333333333333333333",
       "registry_status": "recommended"
     }
   ],
-  "notes": "app_id_hash = sha256(uq/mobile/ios-app-id/v1 || team_id || bundle_id). Host app collects App Attest assertion bound to eat-pass binding."
+  "notes": "Example app_id_hash is a dummy placeholder. Replace it with sha256(uq/mobile/ios-app-id/v1 || team_id || bundle_id). Host app collects App Attest assertion bound to eat-pass binding."
 }

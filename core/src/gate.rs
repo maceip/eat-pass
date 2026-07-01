@@ -39,6 +39,8 @@ pub struct Measurement {
     pub platform: String,
     #[serde(with = "crate::serdehelp::b64vec")]
     pub value_x: Vec<u8>,
+    #[serde(default)]
+    pub ima_verified: bool,
 }
 
 impl Measurement {
@@ -46,7 +48,13 @@ impl Measurement {
         Self {
             platform: platform.into(),
             value_x,
+            ima_verified: false,
         }
+    }
+
+    pub fn with_ima_verified(mut self, ima_verified: bool) -> Self {
+        self.ima_verified = ima_verified;
+        self
     }
 
     /// A coarse, privacy-preserving rate-limit identity for this measurement
@@ -280,6 +288,7 @@ impl AttestationVerifier for DevVerifier {
         let measurement = Measurement {
             platform: eat.platform.clone(),
             value_x: eat.value_x.clone(),
+            ima_verified: false,
         };
 
         let sig_bytes: [u8; 64] = eat

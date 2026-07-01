@@ -1,8 +1,9 @@
 use chrono::Utc;
 use eat_pass_core::gate::Measurement;
 use serde::{Deserialize, Serialize};
+use unified_quote::tiers::assurance_tier;
 
-use crate::schema::{EvidenceProfile, VerificationPolicy};
+use crate::schema::{EvidenceProfile, TrustTier, VerificationPolicy};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -12,6 +13,8 @@ pub enum CheckId {
     BindingOk,
     ReferenceValueMatch,
     RegistryStatus,
+    MinTier,
+    TierDetailAllowed,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -19,9 +22,8 @@ pub struct AppraisalResult {
     pub pass: bool,
     pub policy_id: String,
     pub class_label: String,
-    /// Honest assurance tier (mirrors `unified_quote::tiers`): `silicon-cvm` /
-    /// `device-attested` / `relay-inherited` / `software-witness`. Never collapse
-    /// distinct roots into one badge.
+    /// Assurance tier from `unified_quote::tiers`: `silicon-cvm`,
+    /// `device-attested`, `relay-inherited`, or `software-witness`.
     #[serde(default)]
     pub tier: String,
     /// Finer-grained detail within the tier (e.g. `tpm-ima`, `app-attest`,
@@ -48,6 +50,8 @@ pub struct AppraisalClaims {
     pub app_id_hash: Option<Vec<u8>>,
     /// Channel binding / eat_nonce tie (Hanff et al., CCS 2025 coupled mint).
     pub binding_ok: bool,
+    #[serde(default)]
+    pub ima_verified: bool,
     #[serde(default)]
     pub registry_status: Option<String>,
 }
@@ -85,9 +89,25 @@ pub fn appraise(policy: &VerificationPolicy, claims: &AppraisalClaims) -> Apprai
     };
     checks.push((CheckId::RegistryStatus, registry_ok));
 
+    let (tier, tier_detail) = assurance_tier(&claims.platform, claims.ima_verified);
+    let tier_ok = TrustTier::from_label(tier)
+        .map(|actual| policy.min_tier.accepts(actual))
+        .unwrap_or(false);
+    checks.push((CheckId::MinTier, tier_ok));
+
+    let tier_detail_ok = policy.allowed_tier_details.is_empty()
+        || policy
+            .allowed_tier_details
+            .iter()
+            .any(|allowed| allowed == &tier_detail);
+    checks.push((CheckId::TierDetailAllowed, tier_detail_ok));
+
     let pass = checks.iter().all(|(_, ok)| *ok);
     let measurement = if pass {
-        identity.map(|value_x| Measurement::new(claims.platform.clone(), value_x.clone()))
+        identity.map(|value_x| {
+            Measurement::new(claims.platform.clone(), value_x.clone())
+                .with_ima_verified(claims.ima_verified)
+        })
     } else {
         None
     };
@@ -97,8 +117,6 @@ pub fn appraise(policy: &VerificationPolicy, claims: &AppraisalClaims) -> Apprai
     } else {
         Some(fail_reason(&checks))
     };
-
-    let (tier, tier_detail) = assurance_tier(&claims.platform, policy.require_ima);
 
     AppraisalResult {
         pass,
@@ -110,33 +128,6 @@ pub fn appraise(policy: &VerificationPolicy, claims: &AppraisalClaims) -> Apprai
         checks,
         measurement,
         reason,
-    }
-}
-
-/// Honest assurance tier for a verified platform label. Mirrors
-/// `unified_quote::tiers::assurance_tier` (kept local to avoid a cross-crate
-/// dependency in the policy crate; the unified-quote version is the tested
-/// source of truth). `require_ima` refines only the desktop-TPM detail, since a
-/// gate that required IMA only passes IMA-verified bundles.
-fn assurance_tier(platform: &str, require_ima: bool) -> (&'static str, String) {
-    let p = platform.trim().to_ascii_lowercase().replace('_', "-");
-    match p.as_str() {
-        "sev-snp" | "tdx" | "nitro" | "aws-nitro" | "azure-sev-snp-vtpm" => ("silicon-cvm", p),
-        "linux-tpm-client" | "windows-tpm-client" => (
-            "device-attested",
-            if require_ima {
-                "tpm-ima"
-            } else {
-                "tpm-channel-bound"
-            }
-            .to_string(),
-        ),
-        "macos-app-attest" | "ios-app-attest" | "android-key-attestation" => {
-            ("device-attested", "app-attest".to_string())
-        }
-        "macos-host-attested-guest" => ("device-attested", "host-attested-guest".to_string()),
-        other if other.starts_with("relay") => ("relay-inherited", "relay".to_string()),
-        other => ("software-witness", other.to_string()),
     }
 }
 
@@ -164,6 +155,8 @@ mod tests {
                 version: 1,
             },
             registry_minimum: RegistryMinimum::Recommended,
+            min_tier: TrustTier::SoftwareWitness,
+            allowed_tier_details: Vec::new(),
             allow: vec![crate::schema::AllowEntry {
                 measurement: Some(vec![1u8; 32]),
                 app_id_hash: None,
@@ -186,6 +179,7 @@ mod tests {
             measurement: Some(vec![1u8; 32]),
             app_id_hash: None,
             binding_ok: true,
+            ima_verified: false,
             registry_status: Some("recommended".into()),
         };
         let r = appraise(&p, &c);
@@ -204,9 +198,47 @@ mod tests {
             measurement: Some(vec![1u8; 32]),
             app_id_hash: None,
             binding_ok: false,
+            ima_verified: false,
             registry_status: None,
         };
         let r = appraise(&p, &c);
         assert!(!r.pass);
+    }
+
+    #[test]
+    fn appraise_min_tier_fail_closed() {
+        let mut p = sample_policy();
+        p.min_tier = TrustTier::SiliconCvm;
+        let c = AppraisalClaims {
+            evidence_profile: EvidenceProfile::AzureSnpBundle,
+            platform: "linux-tpm-client".into(),
+            measurement: Some(vec![1u8; 32]),
+            app_id_hash: None,
+            binding_ok: true,
+            ima_verified: true,
+            registry_status: None,
+        };
+        let r = appraise(&p, &c);
+        assert!(!r.pass);
+        assert!(r.checks.contains(&(CheckId::MinTier, false)));
+    }
+
+    #[test]
+    fn appraise_tier_detail_allowlist() {
+        let mut p = sample_policy();
+        p.min_tier = TrustTier::DeviceAttested;
+        p.allowed_tier_details = vec!["tpm-ima".into()];
+        let c = AppraisalClaims {
+            evidence_profile: EvidenceProfile::AzureSnpBundle,
+            platform: "linux-tpm-client".into(),
+            measurement: Some(vec![1u8; 32]),
+            app_id_hash: None,
+            binding_ok: true,
+            ima_verified: false,
+            registry_status: None,
+        };
+        let r = appraise(&p, &c);
+        assert!(!r.pass);
+        assert!(r.checks.contains(&(CheckId::TierDetailAllowed, false)));
     }
 }

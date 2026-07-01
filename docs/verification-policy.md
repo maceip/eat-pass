@@ -25,6 +25,7 @@ Operator-owned appraisal policy for eat-pass. Crypto verification stays in
   "evidence_profile": "azure-snp-bundle",
   "class": { "name": "accepted-builds", "version": 1 },
   "registry_minimum": "recommended",
+  "min_tier": "silicon-cvm",
   "allow": [{ "measurement": "<64-hex SNP launch measurement>" }]
 }
 ```
@@ -34,11 +35,18 @@ Operator-owned appraisal policy for eat-pass. Crypto verification stays in
 
 Mobile entries use `app_id_hash` instead of `measurement`. Desktop TPM / CVM entries use `measurement`.
 
+`min_tier` values, from lowest to highest: `software-witness`, `relay-inherited`,
+`device-attested`, `silicon-cvm`. `allowed_tier_details` is optional and, when
+set, must match the verified tier detail such as `sev-snp`, `tpm-ima`,
+`tpm-channel-bound`, or `app-attest`.
+
 Desktop TPM policies also carry verifier trust anchors:
 
 ```json
 {
   "evidence_profile": "desktop-tpm-client",
+  "min_tier": "device-attested",
+  "allowed_tier_details": ["tpm-ima"],
   "desktop_tpm_ek_roots": [
     "<64-hex sha256 of DER TPM manufacturer or privacy-CA EK root>"
   ],
@@ -76,6 +84,7 @@ eat-pass policy simulate --policy policy/examples/uqaz1-example.json --claims cl
   "platform": "sev-snp",
   "measurement": "<hex>",
   "binding_ok": true,
+  "ima_verified": false,
   "registry_status": "recommended"
 }
 ```

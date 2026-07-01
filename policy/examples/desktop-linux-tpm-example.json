@@ -3,6 +3,7 @@
   "id": "desktop-agent-linux-dev",
   "evidence_profile": "desktop-tpm-client",
   "class": { "name": "desktop-agents", "version": 1 },
+  "min_tier": "device-attested",
   "allow": [
     {
       "measurement": "2222222222222222222222222222222222222222222222222222222222222222",

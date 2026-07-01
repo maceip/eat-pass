@@ -38,6 +38,7 @@ impl<V: AttestationVerifier> PolicyGated<V> {
             measurement: measurement_claim,
             app_id_hash: app_id_claim,
             binding_ok: true,
+            ima_verified: measurement.ima_verified,
             registry_status,
         };
         let result = appraise(&self.policy, &claims);

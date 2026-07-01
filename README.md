@@ -89,7 +89,7 @@ eat-pass origin --issuer http://127.0.0.1:8088 \
 
 # client (inside the attested CVM): fetch origin challenge, collect quote, mint, present
 eat-pass token --kt-log-pub <hex> \
-  --uq-collect "sudo /home/azureuser/unified-quote/target/release/uq azure collect" \
+  --uq-collect "uq azure collect" \
   --count 2 --present http://127.0.0.1:8099/resource
 
 # operator policy tooling

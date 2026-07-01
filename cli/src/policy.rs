@@ -8,8 +8,10 @@ pub fn validate(path: &PathBuf) -> anyhow::Result<()> {
     let policy = VerificationPolicy::from_json_file(path)?;
     let class = policy.measurement_class();
     println!(
-        "OK  policy id={} profile={:?}",
-        policy.id, policy.evidence_profile
+        "OK  policy id={} profile={:?} min_tier={}",
+        policy.id,
+        policy.evidence_profile,
+        policy.min_tier.label()
     );
     println!("    class={} allow={}", class.policy_label(), class.len());
     if let Some(until) = policy.valid_until {

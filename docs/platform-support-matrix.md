@@ -14,7 +14,7 @@ Android concept.
 | Azure Linux CVM, SEV-SNP vTPM | `azure` / `azure-snp-bundle`; `azure-tls` / `azure-attested-tls` | `uq azure collect`; attested-TLS cert path | AMD-rooted SNP report through Azure vTPM, channel binding, and value-x binding | `allow[].measurement` | Policy-backed gate implemented | Keep live Azure fixture coverage current; document production key rotation |
 | Generic unified-quote EAT, SEV-SNP | `uq` / `uq-eat` | unified-quote collector | EAT nonce binding and AMD quote verification | `allow[].measurement` | Policy-backed gate implemented | Production examples still lean on Azure-specific bundle path |
 | Generic unified-quote EAT, Intel TDX | `uq` / `uq-eat` | unified-quote collector | EAT nonce binding and TDX quote verification, when collector supplies TDX evidence | `allow[].measurement` | Verifier compiled into gate | Need live TDX policy example and smoke fixture |
-| AWS Nitro Enclave | intended `uq` / `uq-eat` | unified-quote Nitro support | unified-quote can verify Nitro roots, but eat-pass gate does not enable the `nitro` feature | `allow[].measurement` / Nitro PCR identity | Gap | Enable Nitro in `eat-pass-gate`, add policy example, test fixture, and collector docs |
+| AWS Nitro Enclave | `uq` / `uq-eat` | unified-quote Nitro support | Nitro quote binding and signature verification through the AWS Nitro root; policy tier/detail enforcement | `allow[].measurement`, optional `allowed_tier_details: ["nitro"]` | Policy-backed gate implemented; live smoke passed 2026-07-01 | Add durable captured fixture and collector runbook for rebuilding the live endpoint |
 | Linux host / desktop TPM2 | `desktop-tpm` / `desktop-tpm-client` | `scripts/collect-desktop-tpm.sh`; Python workload SDK | AK quote binding, EK chain to pinned root, credential-activation token, optional PCR/IMA checks | `allow[].measurement`, `desktop_tpm_ek_roots`, `desktop_tpm_activation_pubkeys`, optional `boot_aggregates`, `require_ima` | Policy-backed gate implemented | Activation service/provisioning flow is still operator-supplied; IMA proof requires host kernel setup |
 | Windows host / desktop TPM2 | `desktop-tpm` / `desktop-tpm-client` | `scripts/collect-desktop-tpm-windows.ps1`; C# SDK wrapper | Same verifier as Linux; collector now requires AK/EK/activation inputs and emits EK chain + activation token | Same as Linux TPM | Gate implemented; collector fail-closed | Needs real Windows TPM smoke test and provisioning guide; no IMA path |
 | macOS desktop App Attest | `macos-app-attest` / `macos-app-attest` | Swift desktop SDK | Assertion signature over eat-pass binding and app id hash | `allow[].app_id_hash` | Policy-backed gate partial | Missing server-side App Attest enrollment/root validation and key lifecycle |
@@ -34,3 +34,6 @@ Android concept.
   self-signed-AK-only trust evidence.
 - All eat-pass crates that depend on unified-quote now pin the same hardened
   unified-quote revision.
+- `eat-pass-gate` now enables unified-quote Nitro verification. Live `uq check`
+  against `https://3.17.186.5/` passed on 2026-07-01 after restarting the
+  existing Nitro proxy.

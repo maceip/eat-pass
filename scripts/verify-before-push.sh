@@ -14,6 +14,7 @@ fi
 
 echo "=== verify-before-push ==="
 
+bash scripts/verify-unified-quote-pin.sh
 bash demos/test-all.sh
 
 if [[ "$RUN_DOCKER" == "1" ]]; then

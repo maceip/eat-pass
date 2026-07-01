@@ -5,6 +5,7 @@
   "evidence_profile": "azure-snp-bundle",
   "class": { "name": "accepted-builds", "version": 1 },
   "registry_minimum": "recommended",
+  "min_tier": "silicon-cvm",
   "allow": [
     {
       "measurement": "0000000000000000000000000000000000000000000000000000000000000001",

@@ -31,6 +31,7 @@ pub enum EvidenceProfile {
     /// Linux / Windows TPM2 client quote JSON (`linux-tpm-client` / `windows-tpm-client`).
     DesktopTpmClient,
     /// macOS App Attest assertion JSON.
+    #[serde(rename = "macos-app-attest", alias = "mac-os-app-attest")]
     MacOsAppAttest,
 }
 
@@ -46,6 +47,49 @@ impl RegistryMinimum {
         match self {
             Self::Recommended => status == "recommended",
             Self::Deprecated => status == "recommended" || status == "deprecated",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TrustTier {
+    SoftwareWitness,
+    RelayInherited,
+    DeviceAttested,
+    SiliconCvm,
+}
+
+impl TrustTier {
+    pub fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "software-witness" => Some(Self::SoftwareWitness),
+            "relay-inherited" => Some(Self::RelayInherited),
+            "device-attested" => Some(Self::DeviceAttested),
+            "silicon-cvm" => Some(Self::SiliconCvm),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::SoftwareWitness => "software-witness",
+            Self::RelayInherited => "relay-inherited",
+            Self::DeviceAttested => "device-attested",
+            Self::SiliconCvm => "silicon-cvm",
+        }
+    }
+
+    pub fn accepts(self, actual: Self) -> bool {
+        actual.rank() >= self.rank()
+    }
+
+    fn rank(self) -> u8 {
+        match self {
+            Self::SoftwareWitness => 0,
+            Self::RelayInherited => 1,
+            Self::DeviceAttested => 2,
+            Self::SiliconCvm => 3,
         }
     }
 }
@@ -109,6 +153,10 @@ pub struct VerificationPolicy {
     pub class: ClassSpec,
     #[serde(default = "default_registry_minimum")]
     pub registry_minimum: RegistryMinimum,
+    #[serde(default = "default_min_tier")]
+    pub min_tier: TrustTier,
+    #[serde(default)]
+    pub allowed_tier_details: Vec<String>,
     pub allow: Vec<AllowEntry>,
     /// Desktop-TPM only: require the bundle to carry a hardware-measured IMA log
     /// (replayed into PCR 10) proving the agent binary actually executed, rather
@@ -139,6 +187,10 @@ fn default_registry_minimum() -> RegistryMinimum {
     RegistryMinimum::Recommended
 }
 
+fn default_min_tier() -> TrustTier {
+    TrustTier::SoftwareWitness
+}
+
 impl VerificationPolicy {
     pub fn from_json_bytes(b: &[u8]) -> Result<Self, PolicyError> {
         let p: Self = serde_json::from_slice(b)?;
@@ -166,6 +218,13 @@ impl VerificationPolicy {
         }
         if self.allow.is_empty() {
             return Err(PolicyError::Invalid("allow must not be empty".into()));
+        }
+        for (i, detail) in self.allowed_tier_details.iter().enumerate() {
+            if detail.trim().is_empty() {
+                return Err(PolicyError::Invalid(format!(
+                    "allowed_tier_details[{i}] must be non-empty"
+                )));
+            }
         }
         for (i, e) in self.allow.iter().enumerate() {
             let has_m = e.measurement.as_ref().is_some_and(|m| !m.is_empty());
@@ -358,5 +417,22 @@ mod tests {
             vec!["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
         );
         assert_eq!(p.desktop_tpm_activation_pubkeys_bytes(), vec![[0xbb; 32]]);
+    }
+
+    #[test]
+    fn checked_in_examples_parse() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+        for name in [
+            "desktop-linux-tpm-example.json",
+            "desktop-macos-app-attest-example.json",
+            "aws-nitro-uq-example.json",
+            "mobile-android-example.json",
+            "mobile-ios-example.json",
+            "uqaz1-example.json",
+        ] {
+            let path = root.join(name);
+            VerificationPolicy::from_json_file(&path)
+                .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        }
     }
 }

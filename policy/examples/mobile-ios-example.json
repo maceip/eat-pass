@@ -3,11 +3,13 @@
   "id": "mobile-ios-example",
   "evidence_profile": "ios-app-attest",
   "class": { "name": "mobile-agents", "version": 1 },
+  "min_tier": "device-attested",
+  "allowed_tier_details": ["app-attest"],
   "allow": [
     {
-      "app_id_hash": "REPLACE_WITH_APP_ID_HASH_HEX",
+      "app_id_hash": "5555555555555555555555555555555555555555555555555555555555555555",
       "registry_status": "recommended"
     }
   ],
-  "notes": "app_id_hash = sha256(uq/mobile/ios-app-id/v1 || team_id || bundle_id). Gate: eat-pass attester --gate ios-app-attest --policy this-file"
+  "notes": "Example app_id_hash is a dummy placeholder. Replace it with sha256(uq/mobile/ios-app-id/v1 || team_id || bundle_id). Gate: eat-pass attester --gate ios-app-attest --policy this-file"
 }
