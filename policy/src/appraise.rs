@@ -19,6 +19,15 @@ pub struct AppraisalResult {
     pub pass: bool,
     pub policy_id: String,
     pub class_label: String,
+    /// Honest assurance tier (mirrors `unified_quote::tiers`): `silicon-cvm` /
+    /// `device-attested` / `relay-inherited` / `software-witness`. Never collapse
+    /// distinct roots into one badge.
+    #[serde(default)]
+    pub tier: String,
+    /// Finer-grained detail within the tier (e.g. `tpm-ima`, `app-attest`,
+    /// `host-attested-guest`, `sev-snp`).
+    #[serde(default)]
+    pub tier_detail: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
     pub checks: Vec<(CheckId, bool)>,
@@ -88,14 +97,40 @@ pub fn appraise(policy: &VerificationPolicy, claims: &AppraisalClaims) -> Apprai
         Some(fail_reason(&checks))
     };
 
+    let (tier, tier_detail) = assurance_tier(&claims.platform, policy.require_ima);
+
     AppraisalResult {
         pass,
         policy_id: policy.id.clone(),
         class_label,
+        tier: tier.to_string(),
+        tier_detail,
         notes: policy.notes.clone(),
         checks,
         measurement,
         reason,
+    }
+}
+
+/// Honest assurance tier for a verified platform label. Mirrors
+/// `unified_quote::tiers::assurance_tier` (kept local to avoid a cross-crate
+/// dependency in the policy crate; the unified-quote version is the tested
+/// source of truth). `require_ima` refines only the desktop-TPM detail, since a
+/// gate that required IMA only passes IMA-verified bundles.
+fn assurance_tier(platform: &str, require_ima: bool) -> (&'static str, String) {
+    let p = platform.trim().to_ascii_lowercase().replace('_', "-");
+    match p.as_str() {
+        "sev-snp" | "tdx" | "nitro" | "aws-nitro" | "azure-sev-snp-vtpm" => ("silicon-cvm", p),
+        "linux-tpm-client" | "windows-tpm-client" => (
+            "device-attested",
+            if require_ima { "tpm-ima" } else { "tpm-channel-bound" }.to_string(),
+        ),
+        "macos-app-attest" | "ios-app-attest" | "android-key-attestation" => {
+            ("device-attested", "app-attest".to_string())
+        }
+        "macos-host-attested-guest" => ("device-attested", "host-attested-guest".to_string()),
+        other if other.starts_with("relay") => ("relay-inherited", "relay".to_string()),
+        other => ("software-witness", other.to_string()),
     }
 }
 
@@ -148,6 +183,8 @@ mod tests {
         let r = appraise(&p, &c);
         assert!(r.pass);
         assert!(r.measurement.is_some());
+        assert_eq!(r.tier, "silicon-cvm");
+        assert_eq!(r.tier_detail, "sev-snp");
     }
 
     #[test]
