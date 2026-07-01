@@ -139,14 +139,13 @@ pub fn desktop_build_id_hash_hex(build_digest_hex: String) -> Result<String, Mob
 #[uniffi::export]
 pub fn ios_client_data_hash_hex(binding_hex: String) -> Result<String, MobileError> {
     let binding = parse_hex32(&binding_hex, "binding")?;
-    Ok(hex::encode(unified_quote::tee::mobile::ios_client_data_hash(
-        &binding,
-    )))
+    Ok(hex::encode(
+        unified_quote::tee::mobile::ios_client_data_hash(&binding),
+    ))
 }
 
 fn parse_hex32(hex_str: &str, field: &str) -> Result<[u8; 32], MobileError> {
-    let v = hex::decode(hex_str.trim())
-        .map_err(|e| MobileError::Core(format!("{field}: {e}")))?;
+    let v = hex::decode(hex_str.trim()).map_err(|e| MobileError::Core(format!("{field}: {e}")))?;
     v.as_slice()
         .try_into()
         .map_err(|_| MobileError::Core(format!("{field} must be 32 bytes (64 hex chars)")))

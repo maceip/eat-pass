@@ -18,7 +18,9 @@ use axum::{
     Json, Router,
 };
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
-use eat_pass_core::authorize::{attester_pubkey_from_hex, issue_authorized_with_limit, AttesterVerifyingKey};
+use eat_pass_core::authorize::{
+    attester_pubkey_from_hex, issue_authorized_with_limit, AttesterVerifyingKey,
+};
 use eat_pass_core::gate::GateError;
 use eat_pass_core::transparency::{KeyLog, LogSigner, SignedHead};
 use eat_pass_core::{Issuer, IssuerPublicKey, SignResponse};
@@ -183,13 +185,8 @@ async fn sign(
             format!("authorization_b64 is not valid base64: {e}"),
         )
     })?;
-    let auth: eat_pass_core::authorize::IssuanceAuthorization =
-        serde_json::from_slice(&auth_bytes).map_err(|e| {
-            err(
-                StatusCode::BAD_REQUEST,
-                format!("authorization JSON: {e}"),
-            )
-        })?;
+    let auth: eat_pass_core::authorize::IssuanceAuthorization = serde_json::from_slice(&auth_bytes)
+        .map_err(|e| err(StatusCode::BAD_REQUEST, format!("authorization JSON: {e}")))?;
 
     let g = state.rot.read().await;
     let now = unix_now();

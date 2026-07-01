@@ -72,9 +72,10 @@ pub fn appraise(policy: &VerificationPolicy, claims: &AppraisalClaims) -> Apprai
 
     let identity = claims.measurement.as_ref().or(claims.app_id_hash.as_ref());
     let in_allow = identity.is_some_and(|id| {
-        policy.allow.iter().any(|e| {
-            e.measurement.as_ref() == Some(id) || e.app_id_hash.as_ref() == Some(id)
-        })
+        policy
+            .allow
+            .iter()
+            .any(|e| e.measurement.as_ref() == Some(id) || e.app_id_hash.as_ref() == Some(id))
     });
     checks.push((CheckId::ReferenceValueMatch, in_allow));
 
@@ -123,7 +124,12 @@ fn assurance_tier(platform: &str, require_ima: bool) -> (&'static str, String) {
         "sev-snp" | "tdx" | "nitro" | "aws-nitro" | "azure-sev-snp-vtpm" => ("silicon-cvm", p),
         "linux-tpm-client" | "windows-tpm-client" => (
             "device-attested",
-            if require_ima { "tpm-ima" } else { "tpm-channel-bound" }.to_string(),
+            if require_ima {
+                "tpm-ima"
+            } else {
+                "tpm-channel-bound"
+            }
+            .to_string(),
         ),
         "macos-app-attest" | "ios-app-attest" | "android-key-attestation" => {
             ("device-attested", "app-attest".to_string())

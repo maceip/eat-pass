@@ -27,14 +27,7 @@ pub async fn run(
     let app = Router::new()
         .route("/redeem", post(redeem))
         .with_state(state);
-    serve(
-        app,
-        listen,
-        tls,
-        insecure_http,
-        "eat-pass redeemer",
-    )
-    .await
+    serve(app, listen, tls, insecure_http, "eat-pass redeemer").await
 }
 
 async fn redeem(

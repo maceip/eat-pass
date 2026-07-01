@@ -45,7 +45,10 @@ fn collect_eat(attest: &Attest, binding: &[u8; 32]) -> anyhow::Result<Vec<u8>> {
             let _ = std::fs::remove_file(&out);
             Ok(bytes)
         }
-        Attest::DesktopTpm { script, build_digest } => {
+        Attest::DesktopTpm {
+            script,
+            build_digest,
+        } => {
             let out = tempfile_path("eatpass-desktop-tpm", "json")?;
             let binding_hex = hex::encode(binding);
             let status = std::process::Command::new("bash")
@@ -207,7 +210,10 @@ pub async fn run(
         .error_for_status()?
         .json()
         .await?;
-    eprintln!("attester    authorization OK (binding={})", hex::encode(binding));
+    eprintln!(
+        "attester    authorization OK (binding={})",
+        hex::encode(binding)
+    );
 
     let sign_url = format!("{issuer_base}/sign");
     let body = SignBody {

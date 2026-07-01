@@ -114,13 +114,9 @@ impl Scheme {
         let mut out = Vec::with_capacity(pending.items.len());
         for (item, bsig) in pending.items.into_iter().zip(resp.blind_sigs.iter()) {
             let mut additional_r = item.additional_r;
-            let proof = self.inner.sign_3(
-                &pending.pk,
-                &epk,
-                bsig,
-                item.state,
-                &mut additional_r,
-            );
+            let proof = self
+                .inner
+                .sign_3(&pending.pk, &epk, bsig, item.state, &mut additional_r);
             let authenticator = encode_authenticator(&additional_r, &proof);
             out.push(SpendToken {
                 token_type: TOKEN_TYPE,
@@ -133,11 +129,7 @@ impl Scheme {
         Ok(out)
     }
 
-    pub fn verify(
-        &self,
-        epk: &[u8],
-        token: &SpendToken,
-    ) -> Result<[u8; 32], PomfritError> {
+    pub fn verify(&self, epk: &[u8], token: &SpendToken) -> Result<[u8; 32], PomfritError> {
         if token.token_type != TOKEN_TYPE {
             return Err(PomfritError::Malformed(format!(
                 "token type {} unsupported (want {TOKEN_TYPE})",
@@ -145,11 +137,7 @@ impl Scheme {
             )));
         }
         let (additional_r, proof) = decode_authenticator(&token.authenticator)?;
-        let msg = token_input(
-            &token.nonce,
-            &token.challenge_digest,
-            &token.token_key_id,
-        );
+        let msg = token_input(&token.nonce, &token.challenge_digest, &token.token_key_id);
         let mut additional_r = additional_r;
         if !self.inner.verify(epk, &msg, &proof, &mut additional_r) {
             return Err(PomfritError::VerifyFailed);

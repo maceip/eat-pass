@@ -292,9 +292,8 @@ impl DesktopTpmVerifier {
 
 impl AttestationVerifier for DesktopTpmVerifier {
     fn verify(&self, eat: &[u8], expected_binding: &[u8; 32]) -> Result<Measurement, GateError> {
-        let bundle: unified_quote::tee::desktop::tpm::TpmClientBundle =
-            serde_json::from_slice(eat)
-                .map_err(|e| GateError::AttestationInvalid(format!("desktop tpm bundle: {e}")))?;
+        let bundle: unified_quote::tee::desktop::tpm::TpmClientBundle = serde_json::from_slice(eat)
+            .map_err(|e| GateError::AttestationInvalid(format!("desktop tpm bundle: {e}")))?;
         let verdict = unified_quote::tee::desktop::tpm::verify_bundle(&bundle, expected_binding)
             .map_err(|e| GateError::AttestationInvalid(format!("desktop tpm: {e}")))?;
         if verdict.verdict != "verified" {

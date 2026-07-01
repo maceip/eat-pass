@@ -1,7 +1,7 @@
 //! `eat-pass demo` — split attester/issuer flow in one process (dev-sim only).
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
-use eat_pass_core::authorize::{attester_pubkey_from_hex, issue_authorized_with_limit, dev};
+use eat_pass_core::authorize::{attester_pubkey_from_hex, dev, issue_authorized_with_limit};
 use eat_pass_core::gate::Measurement;
 use eat_pass_core::ratelimit::InMemoryRateLimiter;
 use eat_pass_core::spend::{InMemorySpentStore, SpendError, SpentStore};
@@ -15,10 +15,9 @@ pub fn run_in_process(count: usize) -> anyhow::Result<usize> {
     let value_x = vec![0x42u8; 32];
     let measurement = Measurement::new("dev", value_x.clone());
 
-    let (attester, authorizer) = dev::from_seed(seed, [value_x.clone()])
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let attester_pub =
-        attester_pubkey_from_hex(&hex::encode(authorizer.verifying_key())).unwrap();
+    let (attester, authorizer) =
+        dev::from_seed(seed, [value_x.clone()]).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let attester_pub = attester_pubkey_from_hex(&hex::encode(authorizer.verifying_key())).unwrap();
 
     let issuer = Issuer::generate(1);
     let pk = issuer.public();
@@ -54,15 +53,8 @@ pub fn run_in_process(count: usize) -> anyhow::Result<usize> {
     let auth: eat_pass_core::authorize::IssuanceAuthorization =
         serde_json::from_slice(&B64.decode(body.authorization_b64.as_bytes())?)?;
 
-    let resp = issue_authorized_with_limit(
-        &issuer,
-        &attester_pub,
-        &body.req,
-        &auth,
-        &limiter,
-        now,
-    )
-    .map_err(|e| anyhow::anyhow!("issuer rejected: {e}"))?;
+    let resp = issue_authorized_with_limit(&issuer, &attester_pub, &body.req, &auth, &limiter, now)
+        .map_err(|e| anyhow::anyhow!("issuer rejected: {e}"))?;
     let resp: SignResponse = serde_json::from_str(&serde_json::to_string(&resp)?)?;
 
     let tokens = pending
@@ -71,7 +63,8 @@ pub fn run_in_process(count: usize) -> anyhow::Result<usize> {
 
     let first = tokens.first().ok_or_else(|| anyhow::anyhow!("no tokens"))?;
     let auth_hdr = http::authorization(first);
-    let presented = http::parse_authorization(&auth_hdr).map_err(|e| anyhow::anyhow!("parse: {e}"))?;
+    let presented =
+        http::parse_authorization(&auth_hdr).map_err(|e| anyhow::anyhow!("parse: {e}"))?;
     let nonce = origin_verifier
         .verify(&presented, &challenge)
         .map_err(|e| anyhow::anyhow!("verify: {e}"))?;

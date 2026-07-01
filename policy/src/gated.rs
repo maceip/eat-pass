@@ -29,9 +29,7 @@ impl<V: AttestationVerifier> PolicyGated<V> {
         let (measurement_claim, app_id_claim) = match self.policy.evidence_profile {
             EvidenceProfile::AndroidKeyAttestation
             | EvidenceProfile::IosAppAttest
-            | EvidenceProfile::MacOsAppAttest => {
-                (None, Some(measurement.value_x.clone()))
-            }
+            | EvidenceProfile::MacOsAppAttest => (None, Some(measurement.value_x.clone())),
             _ => (Some(measurement.value_x.clone()), None),
         };
         let claims = AppraisalClaims {

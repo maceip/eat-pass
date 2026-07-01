@@ -89,7 +89,9 @@ pub(crate) mod hex_option {
         let opt: Option<String> = Option::deserialize(d)?;
         match opt {
             None => Ok(None),
-            Some(s) => hex::decode(s.trim()).map(Some).map_err(serde::de::Error::custom),
+            Some(s) => hex::decode(s.trim())
+                .map(Some)
+                .map_err(serde::de::Error::custom),
         }
     }
 }

@@ -12,8 +12,8 @@ pub mod spend;
 pub mod transparency;
 
 use eat_pass_pomfrit::{
-    self as pomfrit, binding_of as pomfrit_binding_of, Scheme, SpendToken, SignRequest as PomfritSignBody,
-    SignResponse as PomfritSignResponse, TOKEN_TYPE,
+    self as pomfrit, binding_of as pomfrit_binding_of, Scheme, SignRequest as PomfritSignBody,
+    SignResponse as PomfritSignResponse, SpendToken, TOKEN_TYPE,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -217,9 +217,7 @@ impl Issuer {
             });
         }
         Ok(SignResponse {
-            blind_sigs: Scheme::new()
-                .issuer_sign(&self.sk, &req.body)
-                .blind_sigs,
+            blind_sigs: Scheme::new().issuer_sign(&self.sk, &req.body).blind_sigs,
         })
     }
 }
@@ -271,8 +269,7 @@ impl Client {
         let challenge_digest = challenge.digest();
         let token_key_id = pk.token_key_id()?;
         let scheme = Scheme::new();
-        let (body, inner) =
-            scheme.client_begin(&pk.key, &token_key_id, &challenge_digest, count);
+        let (body, inner) = scheme.client_begin(&pk.key, &token_key_id, &challenge_digest, count);
         let req = SignRequest {
             token_challenge: challenge.clone(),
             key_version: pk.key_version,
@@ -295,11 +292,7 @@ impl PendingTokens {
             blind_sigs: resp.blind_sigs.clone(),
         };
         scheme
-            .client_finalize(
-                self.inner,
-                &pomfrit_resp,
-                &pk.key,
-            )
+            .client_finalize(self.inner, &pomfrit_resp, &pk.key)
             .map_err(Error::from)
     }
 }
@@ -328,9 +321,7 @@ impl Verifier {
         if token.token_key_id != self.pk.token_key_id()? {
             return Err(Error::KeyIdMismatch);
         }
-        Scheme::new()
-            .verify(&self.epk, token)
-            .map_err(Error::from)
+        Scheme::new().verify(&self.epk, token).map_err(Error::from)
     }
 }
 

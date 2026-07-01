@@ -1,8 +1,8 @@
 //! FAEST-128f signatures for attester authorization, KT log, and policy sidecars.
 
 use faest::{
-    ByteEncoding, Keypair, KeypairGenerator, Signer, Verifier, FAEST128fSignature,
-    FAEST128fSigningKey, FAEST128fVerificationKey,
+    ByteEncoding, FAEST128fSignature, FAEST128fSigningKey, FAEST128fVerificationKey, Keypair,
+    KeypairGenerator, Signer, Verifier,
 };
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
@@ -31,7 +31,9 @@ pub fn verifying_key_from_hex(hex_str: &str) -> Result<FAEST128fVerificationKey,
 }
 
 pub fn sign(sk: &FAEST128fSigningKey, msg: &[u8]) -> Vec<u8> {
-    Signer::<FAEST128fSignature>::sign(sk, msg).as_ref().to_vec()
+    Signer::<FAEST128fSignature>::sign(sk, msg)
+        .as_ref()
+        .to_vec()
 }
 
 pub fn public_bytes_from_sk(sk: &FAEST128fSigningKey) -> [u8; FAEST_PK_LEN] {

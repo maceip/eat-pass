@@ -14,9 +14,7 @@ mod sign;
 pub use appraise::{appraise, AppraisalClaims, AppraisalError, AppraisalResult, CheckId};
 pub use diff::{diff, PolicyDiff};
 pub use gated::PolicyGated;
-pub use schema::{
-    EvidenceProfile, PolicyError, RegistryMinimum, VerificationPolicy,
-};
+pub use schema::{EvidenceProfile, PolicyError, RegistryMinimum, VerificationPolicy};
 pub use sign::{
     load_verified, sidecar_path, sign_policy_file, signing_key_from_env, trusted_pubs_from_env,
 };

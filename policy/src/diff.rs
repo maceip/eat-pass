@@ -30,7 +30,8 @@ pub fn diff(left: &VerificationPolicy, right: &VerificationPolicy) -> PolicyDiff
     PolicyDiff {
         left_id: left.id.clone(),
         right_id: right.id.clone(),
-        same_class: left.class.name == right.class.name && left.class.version == right.class.version,
+        same_class: left.class.name == right.class.name
+            && left.class.version == right.class.version,
         same_profile: left.evidence_profile == right.evidence_profile,
         valid_until_changed: left.valid_until != right.valid_until,
         added_allow: right_set.difference(&left_set).cloned().collect(),

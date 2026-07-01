@@ -70,11 +70,7 @@ impl Gate {
 }
 
 impl AttestationVerifier for Gate {
-    fn verify(
-        &self,
-        eat: &[u8],
-        expected_binding: &[u8; 32],
-    ) -> Result<Measurement, GateError> {
+    fn verify(&self, eat: &[u8], expected_binding: &[u8; 32]) -> Result<Measurement, GateError> {
         self.verify_with_appraisal(eat, expected_binding)
             .map(|(m, _)| m)
     }
@@ -95,7 +91,11 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let trusted = trusted_pubs_from_env()?;
     let policy = load_for_attester(&policy_path, gate_name, &trusted)?;
-    eprintln!("  policy         id={} file={}", policy.id, policy_path.display());
+    eprintln!(
+        "  policy         id={} file={}",
+        policy.id,
+        policy_path.display()
+    );
     if let Some(n) = &policy.notes {
         eprintln!("  policy notes   {n}");
     }
@@ -127,10 +127,7 @@ pub async fn run(
         }
         Backend::IosAppAttest => {
             eprintln!("  gate           ios-app-attest (App Attest assertion + binding)");
-            Gate::IosAppAttest(PolicyGated::new(
-                IosAppAttestVerifier::new(),
-                policy,
-            ))
+            Gate::IosAppAttest(PolicyGated::new(IosAppAttestVerifier::new(), policy))
         }
         Backend::DesktopTpm => {
             eprintln!(
@@ -144,10 +141,7 @@ pub async fn run(
         }
         Backend::MacOsAppAttest => {
             eprintln!("  gate           macos-app-attest (App Attest assertion + binding)");
-            Gate::MacOsAppAttest(PolicyGated::new(
-                MacOsAppAttestVerifier::new(),
-                policy,
-            ))
+            Gate::MacOsAppAttest(PolicyGated::new(MacOsAppAttestVerifier::new(), policy))
         }
     };
 
@@ -155,7 +149,10 @@ pub async fn run(
     let authorizer = Authorizer::new(seed, gate, policy_label.clone(), auth_ttl_secs);
     let vk = authorizer.verifying_key();
 
-    eprintln!("eat-pass attester: ed25519 verifying key {}", hex::encode(vk));
+    eprintln!(
+        "eat-pass attester: ed25519 verifying key {}",
+        hex::encode(vk)
+    );
     eprintln!(
         "  measurement    class={policy_label} allow={}",
         class.len()
@@ -186,10 +183,11 @@ fn attester_seed_from_env() -> anyhow::Result<[u8; 32]> {
              for issuance-authorization signatures. Generate with `openssl rand -hex 32`."
         )
     })?;
-    let b = hex::decode(h.trim())
-        .map_err(|e| anyhow::anyhow!("EATPASS_ATTESTER_SEED bad hex: {e}"))?;
-    <[u8; 32]>::try_from(b.as_slice())
-        .map_err(|_| anyhow::anyhow!("EATPASS_ATTESTER_SEED must be exactly 32 bytes (64 hex chars)"))
+    let b =
+        hex::decode(h.trim()).map_err(|e| anyhow::anyhow!("EATPASS_ATTESTER_SEED bad hex: {e}"))?;
+    <[u8; 32]>::try_from(b.as_slice()).map_err(|_| {
+        anyhow::anyhow!("EATPASS_ATTESTER_SEED must be exactly 32 bytes (64 hex chars)")
+    })
 }
 
 async fn pubkey(State(state): State<Arc<AttesterState>>) -> Json<PubkeyResponse> {

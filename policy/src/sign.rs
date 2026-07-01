@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use base64::Engine;
 use faest::FAEST128fVerificationKey;
 
-use eat_pass_core::faest_sig::{self, sign, signing_key_from_seed, verify};
 use crate::schema::{PolicyError, VerificationPolicy};
+use eat_pass_core::faest_sig::{self, sign, signing_key_from_seed, verify};
 
 /// Sidecar path: `policy.json` → `policy.json.sig` (base64 FAEST-128f signature).
 pub fn sidecar_path(policy_path: &Path) -> PathBuf {
@@ -77,9 +77,10 @@ pub fn signing_key_from_env() -> Result<faest::FAEST128fSigningKey, PolicyError>
     })?;
     let bytes = hex::decode(hex_str.trim())
         .map_err(|e| PolicyError::Invalid(format!("EATPASS_POLICY_SIGNING_SEED bad hex: {e}")))?;
-    let seed: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
-        PolicyError::Invalid("EATPASS_POLICY_SIGNING_SEED must be 32 bytes".into())
-    })?;
+    let seed: [u8; 32] = bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| PolicyError::Invalid("EATPASS_POLICY_SIGNING_SEED must be 32 bytes".into()))?;
     signing_key_from_seed(seed).map_err(|e| PolicyError::Invalid(e.to_string()))
 }
 
@@ -89,9 +90,6 @@ pub fn sign_policy_file(policy_path: &Path) -> Result<PathBuf, PolicyError> {
     let sk = signing_key_from_env()?;
     let sig = sign(&sk, &bytes);
     let out = sidecar_path(policy_path);
-    std::fs::write(
-        &out,
-        base64::engine::general_purpose::STANDARD.encode(sig),
-    )?;
+    std::fs::write(&out, base64::engine::general_purpose::STANDARD.encode(sig))?;
     Ok(out)
 }

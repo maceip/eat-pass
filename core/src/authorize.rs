@@ -45,12 +45,7 @@ impl IssuanceAuthorization {
     /// Canonical signed bytes (everything except `sig`).
     pub fn signed_bytes(&self) -> Vec<u8> {
         let mut v = Vec::with_capacity(
-            AUTH_DOMAIN.len()
-                + 4
-                + 32
-                + self.rate_limit_id.len()
-                + self.policy_label.len()
-                + 12,
+            AUTH_DOMAIN.len() + 4 + 32 + self.rate_limit_id.len() + self.policy_label.len() + 12,
         );
         v.extend_from_slice(AUTH_DOMAIN);
         v.extend_from_slice(&self.version.to_le_bytes());
@@ -222,12 +217,8 @@ pub mod dev {
         let attester = DevAttester::from_seed(seed);
         let class = MeasurementClass::new("default", 1, allow);
         let verifier = DevVerifier::new_for_class(attester.verifying_key(), class)?;
-        let authorizer = Authorizer::new(
-            seed,
-            verifier,
-            "default@v1",
-            DEFAULT_AUTHORIZATION_TTL_SECS,
-        );
+        let authorizer =
+            Authorizer::new(seed, verifier, "default@v1", DEFAULT_AUTHORIZATION_TTL_SECS);
         Ok((attester, authorizer))
     }
 }
@@ -250,12 +241,8 @@ mod tests {
         let value_x = vec![7u8; 32];
         let measurement = Measurement::new("dev", value_x.clone());
         let verifier = DevVerifier::new(attester.verifying_key(), [value_x]).unwrap();
-        let authorizer = Authorizer::new(
-            seed,
-            verifier,
-            "default@v1",
-            DEFAULT_AUTHORIZATION_TTL_SECS,
-        );
+        let authorizer =
+            Authorizer::new(seed, verifier, "default@v1", DEFAULT_AUTHORIZATION_TTL_SECS);
         let attester_pub =
             attester_pubkey_from_hex(&hex::encode(authorizer.verifying_key())).unwrap();
 
@@ -268,15 +255,9 @@ mod tests {
 
         let auth = authorizer.authorize(&eat, &binding, 2, now()).unwrap();
         let limiter = InMemoryRateLimiter::new(64, 3600);
-        let resp = issue_authorized_with_limit(
-            &issuer,
-            &attester_pub,
-            &req,
-            &auth,
-            &limiter,
-            now(),
-        )
-        .unwrap();
+        let resp =
+            issue_authorized_with_limit(&issuer, &attester_pub, &req, &auth, &limiter, now())
+                .unwrap();
         assert_eq!(resp.blind_sigs.len(), 2);
         pending.finalize(&pk, &resp).unwrap();
     }
@@ -300,15 +281,9 @@ mod tests {
         let challenge = TokenChallenge::new("i", "o");
         let (req, _pending) = Client::begin(&pk, &challenge, 1).unwrap();
         let limiter = InMemoryRateLimiter::new(64, 3600);
-        let err = issue_authorized_with_limit(
-            &issuer,
-            &attester_pub,
-            &req,
-            &auth,
-            &limiter,
-            now() + 10,
-        )
-        .unwrap_err();
+        let err =
+            issue_authorized_with_limit(&issuer, &attester_pub, &req, &auth, &limiter, now() + 10)
+                .unwrap_err();
         assert!(matches!(err, GateError::AttestationInvalid(_)));
     }
 }
