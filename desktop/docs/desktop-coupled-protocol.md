@@ -52,8 +52,12 @@ eat-pass attester --gate macos-app-attest --policy policy/examples/desktop-macos
 
 | Host | One-call API |
 |------|----------------|
-| Python | `EatPassDesktopClient.mint_authorization_header()` |
+| Linux (CVM / TEE) | `EatPassLinuxTeeClient` |
+| Linux (no TEE) | `EatPassLinuxWorkloadClient` |
+| Python (Windows TPM) | `EatPassDesktopClient` |
 | C# | `EatPassDesktopClient.MintAuthorizationHeaderAsync()` |
 | Swift macOS | `EatPassDesktopClient.mintAuthorizationHeader()` |
+
+See [../../docs/linux-sdk.md](../../docs/linux-sdk.md) for the Linux dual-surface model.
 
 All use the same `/authorize` and `/sign` bodies as the CLI `eat-pass token` path.

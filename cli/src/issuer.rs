@@ -239,7 +239,6 @@ async fn rotate(
         g.current.public().key_version + 1
     };
     let new_issuer = Issuer::generate(next_version);
-        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("keygen: {e}")))?;
     let new_pk = new_issuer.public();
     let new_tkid = new_pk.token_key_id().map_err(|e| {
         err(

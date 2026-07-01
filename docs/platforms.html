@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>eat-pass // platform surfaces</title>
+<style>
+:root{
+  --bg:#070908; --panel:#0d100e; --panel2:#11150f; --line:#1b231d;
+  --fg:#cdd6cd; --dim:#71806f; --acc:#5ef08a; --amber:#e9b765;
+  --font:"Zurich BT","Zurich","Helvetica Neue",Helvetica,Arial,sans-serif;
+  --mono:"SFMono-Regular",ui-monospace,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font);font-size:16px;line-height:1.6}
+a{color:var(--acc);text-decoration:none}
+.wrap{max-width:780px;margin:0 auto;padding:46px 24px 80px}
+.bar{display:flex;justify-content:space-between;color:var(--dim);font-family:var(--mono);
+  font-size:11px;letter-spacing:.12em;text-transform:uppercase;border-bottom:1px solid var(--line);
+  padding-bottom:12px;margin-bottom:32px}
+h1{font-size:44px;font-weight:300;margin:0 0 10px}
+.lede{color:var(--dim);font-size:16px;max-width:58ch;margin-bottom:24px}
+.tabs{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}
+.tab{border:1px solid var(--line);background:var(--panel);color:var(--dim);padding:6px 12px;
+  border-radius:999px;font-family:var(--mono);font-size:11px;cursor:pointer;transition:.2s}
+.tab:hover{border-color:#334033;color:var(--fg)}
+.tab.active{border-color:var(--acc);color:var(--acc);background:var(--panel2)}
+.panel{display:none;border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:18px}
+.panel.active{display:block}
+.panel h2{margin:0 0 6px;font-size:20px;font-weight:400}
+.adj{color:var(--amber);font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.08em;margin-bottom:12px}
+.kv{display:grid;grid-template-columns:7rem 1fr;gap:8px 12px;font-size:13px;margin:14px 0}
+.kv dt{color:var(--dim);font-family:var(--mono);font-size:11px}
+.kv dd{margin:0;word-break:break-word}
+pre{margin:12px 0 0;padding:12px;background:var(--panel2);border-radius:6px;
+  font-family:var(--mono);font-size:12px;overflow-x:auto;color:var(--fg)}
+.note{margin-top:20px;padding:12px 14px;border-left:3px solid var(--acc);background:var(--panel2);
+  font-size:13px;color:var(--dim)}
+footer{margin-top:40px;border-top:1px solid var(--line);padding-top:14px;color:var(--dim);
+  font-family:var(--mono);font-size:11px;display:flex;gap:16px;flex-wrap:wrap}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="bar">
+    <span><a href="index.html">eat-pass</a> / platforms</span>
+    <span>policy = interface</span>
+  </div>
+  <h1>Platform surfaces</h1>
+  <p class="lede">The operator interface is the <strong>VerificationPolicy</strong> JSON file. The attester <code>--gate</code> selects how evidence arrives; <code>allow</code> selects who may mint. Same mint protocol on every surface — attest → FAEST → PoMFRIT → spend.</p>
+
+  <div class="tabs" id="tabs"></div>
+  <div id="panels"></div>
+
+  <div class="note">
+    <strong>No “gauges”.</strong> Runtime controls are <em>gates</em> (crypto verifier backend: <code>azure</code>, <code>desktop-tpm</code>, …) and <em>policy</em> (appraisal checks after verify). Privileged tools add <a href="https://github.com/maceip/cvm-agent">tool-gate</a> as a spend-time RP (email, etc.).
+  </div>
+
+  <footer>
+    <a href="demos.html">demos</a>
+    <a href="platform-surface.md">markdown spec</a>
+    <a href="https://github.com/maceip/eat-pass/tree/main/policy/examples">policy examples</a>
+  </footer>
+</div>
+<script>
+const SURFACES = [
+  {
+    id: "cvm", label: "linux cvm", adj: "confidential · silicon-rooted",
+    agent: "Cloud agent inside SEV-SNP / TDX CVM",
+    gate: "azure · uq", profile: "azure-snp-bundle · uq-eat",
+    field: "allow[].measurement (launch digest)",
+    sdk: "EatPassLinuxTeeClient (Python) · uq azure collect",
+    trust: "AMD Milan / Intel TDX vendor root",
+    policy: "policy/examples/uqaz1-example.json",
+    cmd: "eat-pass attester --gate azure --policy policy/examples/uqaz1-example.json"
+  },
+  {
+    id: "linux", label: "linux workload", adj: "host · tpm-bound",
+    agent: "Agent on bare metal, VM, or k8s (no confidential VM)",
+    gate: "desktop-tpm", profile: "desktop-tpm-client",
+    field: "allow[].measurement (build_id_hash)",
+    sdk: "EatPassLinuxWorkloadClient · TPM2 quote",
+    trust: "Host TPM2 (weaker than silicon CVM)",
+    policy: "policy/examples/desktop-linux-tpm-example.json",
+    cmd: "eat-pass attester --gate desktop-tpm --policy policy/examples/desktop-linux-tpm-example.json"
+  },
+  {
+    id: "win", label: "windows", adj: "enterprise · tpm-bound",
+    agent: "Desktop / service agent on Windows",
+    gate: "desktop-tpm", profile: "desktop-tpm-client",
+    field: "allow[].measurement (build_id_hash)",
+    sdk: "EatPass.Desktop (C#) · sdk-windows",
+    trust: "TPM2",
+    policy: "policy/examples/desktop-linux-tpm-example.json",
+    cmd: "eat-pass attester --gate desktop-tpm --policy <policy.json>"
+  },
+  {
+    id: "macos", label: "macos", adj: "signed-app · device-bound",
+    agent: "macOS app agent",
+    gate: "macos-app-attest", profile: "macos-app-attest",
+    field: "allow[].app_id_hash",
+    sdk: "EatPassDesktop (Swift) · App Attest",
+    trust: "Apple App Attest",
+    policy: "policy/examples/desktop-macos-app-attest-example.json",
+    cmd: "eat-pass attester --gate macos-app-attest --policy policy/examples/desktop-macos-app-attest-example.json"
+  },
+  {
+    id: "ios", label: "ios", adj: "mobile · device-bound",
+    agent: "iOS app agent",
+    gate: "ios-app-attest", profile: "ios-app-attest",
+    field: "allow[].app_id_hash",
+    sdk: "EatPassMobile (Swift) · sdk-ios",
+    trust: "Apple App Attest",
+    policy: "policy/examples/mobile-ios-example.json",
+    cmd: "eat-pass attester --gate ios-app-attest --policy policy/examples/mobile-ios-example.json"
+  },
+  {
+    id: "android", label: "android", adj: "mobile · keymint-bound",
+    agent: "Android app agent",
+    gate: "android-key", profile: "android-key-attestation",
+    field: "allow[].app_id_hash",
+    sdk: "EatPassMobile (Kotlin) · sdk-android",
+    trust: "Android KeyMint chain",
+    policy: "policy/examples/mobile-android-example.json",
+    cmd: "eat-pass attester --gate android-key --policy policy/examples/mobile-android-example.json"
+  }
+];
+
+const tabs = document.getElementById("tabs");
+const panels = document.getElementById("panels");
+
+function show(id) {
+  document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.dataset.id === id));
+  document.querySelectorAll(".panel").forEach(p => p.classList.toggle("active", p.dataset.id === id));
+  history.replaceState(null, "", "#" + id);
+}
+
+SURFACES.forEach((s, i) => {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "tab" + (i === 0 ? " active" : "");
+  btn.dataset.id = s.id;
+  btn.textContent = s.label;
+  btn.onclick = () => show(s.id);
+  tabs.appendChild(btn);
+
+  const panel = document.createElement("div");
+  panel.className = "panel" + (i === 0 ? " active" : "");
+  panel.dataset.id = s.id;
+  panel.innerHTML = `
+    <div class="adj">${s.adj}</div>
+    <h2>${s.agent}</h2>
+    <dl class="kv">
+      <dt>gate</dt><dd><code>${s.gate}</code></dd>
+      <dt>profile</dt><dd><code>${s.profile}</code></dd>
+      <dt>policy field</dt><dd>${s.field}</dd>
+      <dt>sdk</dt><dd>${s.sdk}</dd>
+      <dt>trust root</dt><dd>${s.trust}</dd>
+      <dt>example</dt><dd><a href="https://github.com/maceip/eat-pass/tree/main/${s.policy}">${s.policy}</a></dd>
+    </dl>
+    <pre>${s.cmd}</pre>`;
+  panels.appendChild(panel);
+});
+
+const hash = location.hash.replace("#", "");
+if (hash && SURFACES.some(s => s.id === hash)) show(hash);
+</script>
+</body>
+</html>

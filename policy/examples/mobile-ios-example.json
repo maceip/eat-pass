@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "id": "mobile-ios-example",
+  "evidence_profile": "ios-app-attest",
+  "class": { "name": "mobile-agents", "version": 1 },
+  "allow": [
+    {
+      "app_id_hash": "REPLACE_WITH_APP_ID_HASH_HEX",
+      "registry_status": "recommended"
+    }
+  ],
+  "notes": "app_id_hash = sha256(uq/mobile/ios-app-id/v1 || team_id || bundle_id). Gate: eat-pass attester --gate ios-app-attest --policy this-file"
+}

@@ -41,7 +41,7 @@ pub fn evidence_profile_for_gate(gate: &str) -> Result<EvidenceProfile, PolicyEr
 pub fn load_for_attester(
     path: &std::path::Path,
     gate: &str,
-    trusted_pubs: &[faest::FAEST128fVerifyingKey],
+    trusted_pubs: &[faest::FAEST128fVerificationKey],
 ) -> Result<VerificationPolicy, PolicyError> {
     let policy = load_verified(path, trusted_pubs)?;
     if policy.is_expired(Utc::now()) {

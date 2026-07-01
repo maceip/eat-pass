@@ -34,3 +34,21 @@ pub mod b64vec {
         B64.decode(s.as_bytes()).map_err(serde::de::Error::custom)
     }
 }
+
+/// `Vec<Vec<u8>>` <-> JSON array of base64 strings.
+pub mod b64vec_nested {
+    use super::*;
+    use serde::Serialize;
+
+    pub fn serialize<S: Serializer>(v: &Vec<Vec<u8>>, s: S) -> Result<S::Ok, S::Error> {
+        let enc: Vec<String> = v.iter().map(|b| B64.encode(b)).collect();
+        enc.serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Vec<u8>>, D::Error> {
+        let enc: Vec<String> = Vec::deserialize(d)?;
+        enc.into_iter()
+            .map(|s| B64.decode(s.trim()).map_err(serde::de::Error::custom))
+            .collect()
+    }
+}

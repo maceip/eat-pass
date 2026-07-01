@@ -313,7 +313,7 @@ pub fn issue_gated<V: AttestationVerifier>(
     eat: &[u8],
 ) -> Result<crate::SignResponse, GateError> {
     let binding = crate::binding_of(&req.body.blinded);
-    if binding != req.binding {
+    if binding != req.binding() {
         return Err(GateError::BindingMismatch);
     }
     let _measurement = verifier.verify(eat, &binding)?;
@@ -333,7 +333,7 @@ pub fn issue_gated_with_limit<V: AttestationVerifier, R: RateLimiter>(
     limiter: &R,
 ) -> Result<crate::SignResponse, GateError> {
     let binding = crate::binding_of(&req.body.blinded);
-    if binding != req.binding {
+    if binding != req.binding() {
         return Err(GateError::BindingMismatch);
     }
     let measurement = verifier.verify(eat, &binding)?;

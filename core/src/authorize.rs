@@ -5,14 +5,14 @@
 //! PoMFRIT signing key and mints tokens on presentation of a valid
 //! authorization — it never sees or judges raw EAT bytes.
 
-use faest::FAEST128fVerifyingKey;
+use faest::FAEST128fVerificationKey;
 use serde::{Deserialize, Serialize};
 
 use crate::faest_sig::{self, signing_key_from_seed};
 use crate::gate::{AttestationVerifier, GateError, Measurement};
 use crate::ratelimit::{RateLimitError, RateLimiter};
 
-pub type AttesterVerifyingKey = FAEST128fVerifyingKey;
+pub type AttesterVerifyingKey = FAEST128fVerificationKey;
 
 /// Wire version for [`IssuanceAuthorization`]. Bump on breaking changes.
 pub const AUTHORIZATION_VERSION: u32 = 1;
@@ -113,7 +113,7 @@ impl<V: AttestationVerifier> Authorizer<V> {
     }
 
     pub fn verifying_key(&self) -> [u8; 32] {
-        faest_sig::public_bytes(&self.signer.verifying_key())
+        faest_sig::public_bytes_from_sk(&self.signer)
     }
 
     pub fn verifier(&self) -> &V {
@@ -183,7 +183,7 @@ pub fn issue_authorized_with_limit<R: RateLimiter>(
     auth.verify(attester_pub, now)?;
 
     let binding = crate::binding_of(&req.body.blinded);
-    if binding != req.binding {
+    if binding != req.binding() {
         return Err(GateError::BindingMismatch);
     }
     if binding != auth.binding {

@@ -1,0 +1,7 @@
+{
+  "evidence_profile": "azure-snp-bundle",
+  "platform": "sev-snp",
+  "measurement": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "binding_ok": true,
+  "registry_status": "recommended"
+}

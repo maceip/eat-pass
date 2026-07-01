@@ -30,9 +30,11 @@ Operator-owned appraisal policy for eat-pass. Crypto verification stays in
 ```
 
 `evidence_profile` values: `uq-eat`, `azure-snp-bundle`, `azure-attested-tls`,
-`android-key-attestation`, `ios-app-attest`.
+`android-key-attestation`, `ios-app-attest`, `desktop-tpm-client`, `macos-app-attest`.
 
-Mobile entries use `app_id_hash` instead of `measurement`.
+Mobile entries use `app_id_hash` instead of `measurement`. Desktop TPM / CVM entries use `measurement`.
+
+Per-platform table: [`docs/platform-surface.md`](platform-surface.md) · interactive: [`platforms.html`](platforms.html)
 
 ## CLI (human + agent)
 

@@ -1,9 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use base64::Engine;
-use faest::FAEST128fVerifyingKey;
+use faest::FAEST128fVerificationKey;
 
-use crate::faest_sig::{self, sign, signing_key_from_seed, verify};
+use eat_pass_core::faest_sig::{self, sign, signing_key_from_seed, verify};
 use crate::schema::{PolicyError, VerificationPolicy};
 
 /// Sidecar path: `policy.json` → `policy.json.sig` (base64 FAEST-128f signature).
@@ -19,7 +19,7 @@ pub fn sidecar_path(policy_path: &Path) -> PathBuf {
 
 pub fn load_verified(
     policy_path: &Path,
-    trusted_pubs: &[FAEST128fVerifyingKey],
+    trusted_pubs: &[FAEST128fVerificationKey],
 ) -> Result<VerificationPolicy, PolicyError> {
     let bytes = std::fs::read(policy_path)?;
     let policy = VerificationPolicy::from_json_bytes(&bytes)?;
@@ -50,7 +50,7 @@ pub fn load_verified(
     Ok(policy)
 }
 
-pub fn trusted_pubs_from_env() -> Result<Vec<FAEST128fVerifyingKey>, PolicyError> {
+pub fn trusted_pubs_from_env() -> Result<Vec<FAEST128fVerificationKey>, PolicyError> {
     let Ok(raw) = std::env::var("EATPASS_POLICY_TRUSTED_PUB") else {
         return Ok(Vec::new());
     };

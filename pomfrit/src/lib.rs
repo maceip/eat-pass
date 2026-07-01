@@ -44,7 +44,8 @@ impl Scheme {
     }
 
     pub fn expand_pk(&self, pk: &[u8]) -> Vec<u8> {
-        self.inner.mayo.expand_pk(pk)
+        let pk = pk.to_vec();
+        self.inner.mayo.expand_pk(&pk)
     }
 
     pub fn token_key_id(pk: &[u8]) -> [u8; 32] {
@@ -86,9 +87,10 @@ impl Scheme {
     }
 
     pub fn issuer_sign(&self, sk: &[u8], req: &SignRequest) -> SignResponse {
+        let sk = sk.to_vec();
         let mut blind_sigs = Vec::with_capacity(req.blinded.len());
         for bm in &req.blinded {
-            blind_sigs.push(self.inner.sign_2(sk, bm));
+            blind_sigs.push(self.inner.sign_2(&sk, bm));
         }
         SignResponse { blind_sigs }
     }
@@ -99,18 +101,21 @@ impl Scheme {
         resp: &SignResponse,
         pk: &[u8],
     ) -> Result<Vec<SpendToken>, PomfritError> {
+        if pk != pending.pk.as_slice() {
+            return Err(PomfritError::Malformed("issuer pubkey mismatch".into()));
+        }
         if resp.blind_sigs.len() != pending.items.len() {
             return Err(PomfritError::CountMismatch {
                 want: pending.items.len(),
                 got: resp.blind_sigs.len(),
             });
         }
-        let epk = self.inner.mayo.expand_pk(pk);
+        let epk = self.inner.mayo.expand_pk(&pending.pk);
         let mut out = Vec::with_capacity(pending.items.len());
         for (item, bsig) in pending.items.into_iter().zip(resp.blind_sigs.iter()) {
             let mut additional_r = item.additional_r;
             let proof = self.inner.sign_3(
-                pk,
+                &pending.pk,
                 &epk,
                 bsig,
                 item.state,
@@ -188,7 +193,7 @@ pub struct SpendToken {
     pub challenge_digest: [u8; 32],
     #[serde(with = "hex32")]
     pub token_key_id: [u8; 32],
-    #[serde(with = "b64vec")]
+    #[serde(with = "b64bytes")]
     pub authenticator: Vec<u8>,
 }
 
@@ -295,6 +300,20 @@ fn random32() -> [u8; 32] {
     let mut b = [0u8; 32];
     rand::rng().fill_bytes(&mut b);
     b
+}
+
+mod b64bytes {
+    use base64::{engine::general_purpose::STANDARD as B64, Engine};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(v: &Vec<u8>, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&B64.encode(v))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        let s = String::deserialize(d)?;
+        B64.decode(s.trim()).map_err(serde::de::Error::custom)
+    }
 }
 
 mod b64vec {

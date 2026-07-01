@@ -133,8 +133,14 @@ pub async fn run(
             ))
         }
         Backend::DesktopTpm => {
-            eprintln!("  gate           desktop-tpm (Linux/Windows TPM2 AK quote + binding)");
-            Gate::DesktopTpm(PolicyGated::new(DesktopTpmVerifier::new(), policy))
+            eprintln!(
+                "  gate           desktop-tpm (Linux/Windows TPM2 AK quote + binding; require_ima={}, boot_allow={})",
+                policy.require_ima,
+                policy.boot_aggregates.len()
+            );
+            let verifier =
+                DesktopTpmVerifier::with_policy(policy.require_ima, policy.boot_aggregates_bytes());
+            Gate::DesktopTpm(PolicyGated::new(verifier, policy))
         }
         Backend::MacOsAppAttest => {
             eprintln!("  gate           macos-app-attest (App Attest assertion + binding)");

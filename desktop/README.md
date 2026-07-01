@@ -1,73 +1,80 @@
 # eat-pass SDKs (all platforms)
 
-Coupled mint: **platform attestation bound to eat-pass channel binding** → attester `/authorize` → issuer `/sign` → `Authorization: PrivateToken …`.
+Coupled mint: **attest → policy (FAEST) → blind mint (PoMFRIT) → spend**.
 
-| Platform | SDK path | Attestation | Crypto |
-|----------|----------|-------------|--------|
-| Android | `mobile/sdk-android/` | Key Attestation | UniFFI → `libeat_pass_mobile.so` |
-| iOS | `mobile/sdk-ios/` | App Attest | UniFFI → static/dylib |
-| macOS | `desktop/sdk-macos/` | App Attest | UniFFI → `libeat_pass_mobile.dylib` |
-| Linux | `desktop/sdk-python/` | TPM2 (`collect-desktop-tpm.sh`) | UniFFI Python |
-| Windows | `desktop/sdk-windows/` | TPM2 (`.ps1`) | `eat-pass-mobile-ffi` subprocess |
+| Platform | SDK | Surface | Attester gate |
+|----------|-----|---------|---------------|
+| **Linux (CVM)** | `eatpass_desktop.linux.tee` | TEE / confidential VM | `azure`, `uq` |
+| **Linux (agent)** | `eatpass_desktop.linux.workload` | Host TPM, no TEE | `desktop-tpm` |
+| **Windows** | `eatpass_desktop` / `sdk-windows` | TPM2 | `desktop-tpm` |
+| **macOS** | `desktop/sdk-macos` | App Attest | `macos-app-attest` |
+| **iOS** | `mobile/sdk-ios` | App Attest | `ios-app-attest` |
+| **Android** | `mobile/sdk-android` | Key Attestation | `android-key` |
 
-Shared Rust crate: **`eat-pass-mobile`** (`EatPassClient.begin` / `finalize`, hash helpers).
+Shared crypto: **`eat-pass-mobile`** (`EatPassClient.begin` / `finalize`).
 
-## Build native crypto once
+## Linux — two surfaces (same mint protocol)
+
+Linux is the only platform with **two first-class SDK entry points**. Pick by **where the code runs**, not by language:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  EatPassLinuxTeeClient          EatPassLinuxWorkloadClient  │
+│  (inside SEV-SNP / TDX CVM)     (bare metal, VM, k8s, laptop)│
+│  uq/azure collect               TPM2 + sha256(agent binary) │
+│  policy: launch measurement     policy: desktop_build_id_hash│
+└─────────────────────────────────────────────────────────────┘
+                              │
+                    same: begin(binding) → /authorize → /sign → finalize
+```
+
+### TEE surface (CVM agent)
+
+```python
+from eatpass_desktop import EatPassLinuxTeeClient, EatPassLinuxTeeConfig
+
+client = EatPassLinuxTeeClient(EatPassLinuxTeeConfig(
+    attester_url="http://127.0.0.1:8087",
+    issuer_url="http://127.0.0.1:8088",
+    collect_cmd="uq azure collect",  # runs with --value-x <binding> -o <tmp>
+))
+print(client.mint_authorization_header().authorization_header)
+```
+
+Attester: `eat-pass attester --gate azure --policy policy/examples/uqaz1-example.json`
+
+### Workload surface (no TEE)
+
+```python
+from eatpass_desktop import EatPassLinuxWorkloadClient, EatPassLinuxWorkloadConfig
+
+client = EatPassLinuxWorkloadClient(EatPassLinuxWorkloadConfig(
+    attester_url="http://127.0.0.1:8087",
+    issuer_url="http://127.0.0.1:8088",
+    build_digest_hex="<sha256-hex-of-agent-binary>",
+))
+print(client.mint_authorization_header().authorization_header)
+```
+
+Attester: `eat-pass attester --gate desktop-tpm --policy policy/examples/desktop-linux-tpm-example.json`
+
+Policy digest: `eat-pass desktop-hash-build ./your-agent`
+
+See [../docs/linux-sdk.md](../docs/linux-sdk.md).
+
+## Build native crypto
 
 ```bash
 cd eat-pass
 cargo build -p eat-pass-mobile
-cargo build -p eat-pass-mobile --bin eat-pass-mobile-ffi   # Windows C# helper
-./desktop/generate-bindings.sh   # Kotlin, Swift, Python + RustBridge copies
-```
-
-## Python (Linux / Windows agents)
-
-```bash
+./desktop/generate-bindings.sh   # Python + Kotlin + Swift
 pip install -e desktop/sdk-python
-export PYTHONPATH=desktop/sdk-python   # after generate-bindings
-
-python - <<'PY'
-from eatpass_desktop import EatPassConfig, EatPassDesktopClient, PlatformAttest
-
-client = EatPassDesktopClient(EatPassConfig(
-    attester_url="http://127.0.0.1:8087",
-    issuer_url="http://127.0.0.1:8088",
-    build_digest_hex="<sha256-hex-of-agent-binary>",
-    platform=PlatformAttest.LINUX_TPM,
-))
-print(client.mint_authorization_header().authorization_header)
-PY
 ```
 
-Policy: `desktop_build_id_hash(build_digest)` — `eat-pass desktop-hash-build ./agent`.
+## Other platforms
 
-## macOS (Swift)
+- **Windows:** `desktop/sdk-windows` (C# + `eat-pass-mobile-ffi`)
+- **macOS / iOS:** Swift packages under `desktop/sdk-macos`, `mobile/sdk-ios`
+- **Android:** `mobile/sdk-android`
 
-Add `desktop/sdk-macos` as a local Swift package. Enroll App Attest key once; pass `keyId` + `credentialPublicKeyHex` to `EatPassDesktopClient`.
-
-## iOS (Swift)
-
-Same as Android flow; see `mobile/sdk-ios/Sources/EatPassMobile/EatPassMobileClient.swift`.
-
-## Windows (C#)
-
-```bash
-dotnet build desktop/sdk-windows/EatPass.Desktop
-# ensure eat-pass-mobile-ffi on PATH (target/debug/eat-pass-mobile-ffi.exe)
-```
-
-Set `BUILD_DIGEST` policy field via `TpmAttestation.DesktopBuildIdHashHex`.
-
-## Wire protocol
-
-See [docs/desktop-coupled-protocol.md](docs/desktop-coupled-protocol.md) and [../docs/mobile-coupled-protocol.md](../docs/mobile-coupled-protocol.md).
-
-## Attester gates
-
-| Gate | SDK |
-|------|-----|
-| `android-key` | Android |
-| `ios-app-attest` | iOS |
-| `macos-app-attest` | macOS |
-| `desktop-tpm` | Linux / Windows |
+Wire protocol: [docs/desktop-coupled-protocol.md](docs/desktop-coupled-protocol.md)

@@ -193,7 +193,7 @@ impl LogSigner {
     }
 
     pub fn public(&self) -> [u8; 32] {
-        faest_sig::public_bytes(&self.sk.verifying_key())
+        faest_sig::public_bytes_from_sk(&self.sk)
     }
 
     pub fn sign(&self, log: &KeyLog) -> SignedHead {

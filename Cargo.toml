@@ -3,13 +3,25 @@ resolver = "2"
 members = ["core", "cli", "gate", "mobile", "policy", "pomfrit"]
 # The libFuzzer harness needs a nightly toolchain; keep it out of the default
 # build and the CI matrix. Run on demand: `cargo +nightly fuzz run <target>`.
-exclude = ["core/fuzz"]
+exclude = [
+  "core/fuzz",
+  "third_party/pq_blind_signatures/blind-signatures",
+  "third_party/pq_blind_signatures/mayo-c-sys",
+  "third_party/pq_blind_signatures/vole-mayo-sys",
+]
 
 [workspace.package]
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/maceip/eat-pass"
 authors = ["maceip"]
+
+# Local-dev patch: build against the sibling unified-quote checkout
+# (../unified-quote/v2) instead of the published git tag, so changes to the core
+# verifier and the gate/policy here are validated together. Bump the gate's git
+# tag and drop this patch once the unified-quote changes are published.
+[patch."https://github.com/maceip/unified-quote"]
+unified-quote = { path = "../unified-quote/v2" }
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

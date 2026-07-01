@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "id": "mobile-android-example",
+  "evidence_profile": "android-key-attestation",
+  "class": { "name": "mobile-agents", "version": 1 },
+  "allow": [
+    {
+      "app_id_hash": "REPLACE_WITH_SHA256_PACKAGE_CERT_HEX",
+      "registry_status": "recommended"
+    }
+  ],
+  "notes": "app_id_hash = sha256(uq/mobile/android-app-id/v1 || package || signing_cert_digest). Gate: eat-pass attester --gate android-key --policy this-file"
+}

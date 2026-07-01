@@ -13,7 +13,7 @@ pub mod transparency;
 
 use eat_pass_pomfrit::{
     self as pomfrit, binding_of as pomfrit_binding_of, Scheme, SpendToken, SignRequest as PomfritSignBody,
-    SignResponse as PomfritSignResponse, ALG, TOKEN_TYPE,
+    SignResponse as PomfritSignResponse, TOKEN_TYPE,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -181,10 +181,8 @@ pub fn check_key_consistency(pinned: &[u8; 32], pk: &IssuerPublicKey) -> Result<
 }
 
 pub struct Issuer {
-    scheme: Scheme,
     sk: Vec<u8>,
     pk: Vec<u8>,
-    epk: Vec<u8>,
     key_version: u32,
 }
 
@@ -195,9 +193,7 @@ impl Issuer {
         Self {
             sk: kp.sk,
             pk: kp.pk,
-            epk: kp.epk,
             key_version,
-            scheme,
         }
     }
 
@@ -221,8 +217,7 @@ impl Issuer {
             });
         }
         Ok(SignResponse {
-            blind_sigs: self
-                .scheme
+            blind_sigs: Scheme::new()
                 .issuer_sign(&self.sk, &req.body)
                 .blind_sigs,
         })
@@ -245,7 +240,7 @@ impl SignRequest {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SignResponse {
-    #[serde(with = "serdehelp::b64vec")]
+    #[serde(with = "serdehelp::b64vec_nested")]
     pub blind_sigs: Vec<Vec<u8>>,
 }
 
@@ -311,15 +306,13 @@ impl PendingTokens {
 
 pub struct Verifier {
     pub pk: IssuerPublicKey,
-    scheme: Scheme,
     epk: Vec<u8>,
 }
 
 impl Verifier {
     pub fn new(pk: IssuerPublicKey) -> Self {
-        let scheme = Scheme::new();
-        let epk = scheme.expand_pk(&pk.key);
-        Self { pk, scheme, epk }
+        let epk = Scheme::new().expand_pk(&pk.key);
+        Self { pk, epk }
     }
 
     pub fn verify(&self, token: &Token, challenge: &TokenChallenge) -> Result<[u8; 32], Error> {
@@ -335,7 +328,7 @@ impl Verifier {
         if token.token_key_id != self.pk.token_key_id()? {
             return Err(Error::KeyIdMismatch);
         }
-        self.scheme
+        Scheme::new()
             .verify(&self.epk, token)
             .map_err(Error::from)
     }
@@ -374,7 +367,7 @@ pub mod http {
         let bytes = B64URL
             .decode(b64)
             .map_err(|e| super::Error::Malformed(format!("base64url: {e}")))?;
-        Token::from_bytes(&bytes).map_err(Error::from)
+        Token::from_bytes(&bytes).map_err(super::Error::from)
     }
 
     pub fn parse_www_authenticate(header: &str) -> Result<super::TokenChallenge, super::Error> {

@@ -126,14 +126,15 @@ footer a{color:var(--dim)} footer a:hover{color:var(--acc)}
   <div class="reveal" style="--d:.1s"><span class="role">authorization tokens</span></div>
   <div class="tagline reveal" style="--d:.15s">privacy pass, gated on hardware attestation</div>
 
-  <p class="summary reveal" style="--d:.2s">an origin that wants to accept requests <i>only</i> from a genuine, attested build — without learning <i>which</i> client — needs anonymous authorization. eat-pass mints RFC&nbsp;9578 blind-RSA tokens that are issued <b>only</b> for a request carrying a valid unified-quote attestation for an accepted measurement, and are unlinkable at redemption and spendable once. think Google&nbsp;Aratea / Apple&nbsp;ARC, rooted in the CPU vendor instead of a platform operator.</p>
+  <p class="summary reveal" style="--d:.2s">an origin that wants to accept requests <i>only</i> from a genuine, attested build — without learning <i>which</i> client — needs anonymous authorization. eat-pass mints <b>PoMFRIT</b> anonymous spend tokens that are issued <b>only</b> after FAEST-128f attester authorization on a valid unified-quote attestation for an accepted measurement, and are unlinkable at redemption and spendable once. think Google&nbsp;Aratea / Apple&nbsp;ARC, rooted in the CPU vendor instead of a platform operator.</p>
+
+  <p class="summary reveal" style="--d:.22s"><a class="link" href="demos.html">demos</a> · <a class="link" href="platforms.html">platform surfaces</a> — policy is the interface; gate picks evidence per platform.</p>
 
   <div class="card reveal" style="--d:.25s">
-    <div class="hd">$ eat-pass demo &middot; issuer &rarr; client &rarr; origin, in-process</div>
-    <pre><span class="c"># no network, no tee — the whole flow end to end</span>
-<span class="p">$</span> cargo run -p eat-pass-cli -- demo
-attest <span class="ok">PASS</span> · gate <span class="ok">PASS</span> · blind-sign <span class="ok">PASS</span> · finalize 3 tokens
-origin   token accepted + spent · replay rejected <span class="ok">(double-spend)</span></pre>
+    <div class="hd">$ protocol smoke &middot; dev-sim only (not an RA demo)</div>
+    <pre><span class="c"># in-process attest → FAEST → PoMFRIT → spend; no network, no tee</span>
+<span class="p">$</span> cargo test -p eat-pass-cli --features dev-sim demo_runs_end_to_end
+attest <span class="ok">PASS</span> · gate <span class="ok">PASS</span> · blind-sign <span class="ok">PASS</span> · replay rejected <span class="ok">(double-spend)</span></pre>
   </div>
 
   <div class="card reveal" style="--d:.28s">
@@ -165,7 +166,7 @@ kt <span class="ok">OK</span> — log is consistent with previously-seen head se
 report_data[0..32] / AK qualifyingData <span class="ok">= binding</span>   <span class="c"># hardware-signed</span>
    │  unified-quote verifies → AMD/Intel root
    ▼
-gate accepts measurement &rarr; <span class="ok">blind-sign</span>          <span class="c"># RFC 9474 RSABSSA</span>
+gate accepts measurement &rarr; <span class="ok">PoMFRIT blind-sign</span>     <span class="c"># RFC 9578-shaped token</span>
 <span class="ok"># result:</span> token issued only for an attested build, unlinkable on redemption</pre>
   </div>
 
@@ -196,8 +197,8 @@ gate accepts measurement &rarr; <span class="ok">blind-sign</span>          <spa
   </div>
 
   <footer class="reveal" style="--d:.46s">
-    <span><a href="https://github.com/maceip/eat-pass">github.com/maceip/eat-pass</a></span>
-    <span>RFC 9474 &middot; RFC 9578 &middot; RFC 9577 &middot; blind-RSA</span>
+    <span><a href="demos.html">demos</a> &middot; <a href="https://github.com/maceip/eat-pass">github.com/maceip/eat-pass</a></span>
+    <span>RFC 9578 &middot; PoMFRIT &middot; FAEST-128f</span>
   </footer>
 </div>
 </body>

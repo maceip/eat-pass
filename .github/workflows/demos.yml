@@ -1,0 +1,44 @@
+name: demos
+
+# Runnable demo scripts — Python policy demos + live uq/tool-gate checks (no PoMFRIT build).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - demos/**
+      - docs/demos.html
+      - docs/platforms.html
+      - policy/examples/**
+      - .github/workflows/demos.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - demos/**
+  workflow_dispatch:
+
+jobs:
+  demos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout unified-quote (uq verifier + report_nodes)
+        uses: actions/checkout@v4
+        with:
+          repository: maceip/unified-quote
+          path: unified-quote
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build uq
+        working-directory: unified-quote/v2
+        run: cargo build --release --bin uq
+
+      - name: Run demo test suite
+        env:
+  UQ_BIN: ${{ github.workspace }}/unified-quote/target/release/uq
+          UQ_REPO: ${{ github.workspace }}/unified-quote
+        run: |
+          chmod +x demos/test-all.sh demos/fail-closed/*.sh demos/laptop-jury/*.sh demos/tool-gate/*.sh
+          bash demos/test-all.sh

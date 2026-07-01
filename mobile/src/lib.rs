@@ -99,7 +99,7 @@ impl EatPassClient {
             .map_err(|e| MobileError::Core(e.to_string()))?;
         let request_json =
             serde_json::to_string(&req).map_err(|e| MobileError::Core(e.to_string()))?;
-        let binding_hex = hex::encode(req.binding);
+        let binding_hex = hex::encode(req.binding());
         *self.pending.lock().expect("pending mutex") = Some(pending);
         Ok(BeginResult {
             request_json,

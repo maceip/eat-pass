@@ -128,6 +128,8 @@ mod tests {
                 app_id_hash: None,
                 registry_status: None,
             }],
+            require_ima: false,
+            boot_aggregates: Vec::new(),
             notes: None,
         }
     }
