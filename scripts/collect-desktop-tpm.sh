@@ -8,17 +8,30 @@
 # by the kernel into PCR 10 (not merely self-reported). Without a readable IMA
 # log it falls back to a channel-bound-only bundle (weaker tier).
 #
-# Requires: tpm2-tools, openssl, python3.
+# Requires: tpm2-tools, python3.
 # IMA mode additionally needs a sha256 IMA template:
 #   ima_template=ima-ng ima_hash=sha256   (kernel cmdline)
 # and a readable /sys/kernel/security/ima/ascii_runtime_measurements (root).
 #
 # Usage:
-#   BINDING=<64-hex> BUILD_DIGEST=<64-hex> ./scripts/collect-desktop-tpm.sh [-o bundle.json]
+#   BINDING=<64-hex> BUILD_DIGEST=<64-hex> \
+#     TPM_AK_CTX=ak.ctx \
+#     TPM_AK_NAME_FILE=ak.name \
+#     AK_CERT_DER=ak.der \
+#     EK_CERT_DER=ek.der \
+#     EK_CA_CHAIN_DER="ek-intermediate.der:ek-root.der" \
+#     TPM_CREDENTIAL_ACTIVATION_JSON=activation.json \
+#     ./scripts/collect-desktop-tpm.sh [-o bundle.json]
 #
 # BINDING is the eat-pass channel binding (binding_of(blinded)).
 # BUILD_DIGEST is sha256(agent binary) hex; it MUST be what IMA measured for the
 # running binary. Policy allowlists desktop_build_id_hash(build_digest).
+#
+# EK_CERT_DER and EK_CA_CHAIN_DER are verifier trust inputs carried in the
+# evidence bundle; policy must pin the final EK root fingerprint. The activation
+# JSON must contain { "token": ..., "secret": "<hex>" } from a verifier-issued
+# makecredential/activatecredential flow for this AK name, EK cert, AK cert, and
+# binding. A self-signed AK certificate by itself is not TPM provenance.
 
 set -euo pipefail
 
@@ -31,30 +44,54 @@ fi
 
 BINDING="${BINDING:?set BINDING to 32-byte hex (eat-pass channel binding)}"
 BUILD_DIGEST="${BUILD_DIGEST:?set BUILD_DIGEST to sha256(agent binary) hex}"
+EK_CERT_DER="${EK_CERT_DER:-}"
+EK_CA_CHAIN_DER="${EK_CA_CHAIN_DER:-}"
+TPM_CREDENTIAL_ACTIVATION_JSON="${TPM_CREDENTIAL_ACTIVATION_JSON:-}"
+TPM_AK_CTX="${TPM_AK_CTX:-}"
+TPM_AK_NAME_FILE="${TPM_AK_NAME_FILE:-}"
+AK_CERT_DER="${AK_CERT_DER:-}"
 
-for cmd in tpm2_createek tpm2_createak tpm2_quote tpm2_pcrread tpm2_readpublic openssl python3; do
+if [[ -z "$TPM_AK_CTX" || -z "$TPM_AK_NAME_FILE" || -z "$AK_CERT_DER" || -z "$EK_CERT_DER" || -z "$EK_CA_CHAIN_DER" || -z "$TPM_CREDENTIAL_ACTIVATION_JSON" ]]; then
+  cat >&2 <<'EOF'
+missing hardened desktop TPM provenance inputs:
+  TPM_AK_CTX                          persistent AK context used for activation
+  TPM_AK_NAME_FILE                    TPM2B_NAME file for that AK
+  AK_CERT_DER                         DER AK certificate bound by the activation token
+  EK_CERT_DER                         DER EK certificate for this TPM
+  EK_CA_CHAIN_DER                     colon-separated DER issuer chain ending at pinned root
+  TPM_CREDENTIAL_ACTIVATION_JSON      verifier activation token + recovered secret
+
+The old self-signed-AK-only bundle is intentionally not emitted. Provision a
+persistent AK, run EK-rooted credential activation for that AK/cert/name first,
+then rerun this collector.
+EOF
+  exit 2
+fi
+[[ -r "$TPM_AK_CTX" ]] || { echo "TPM_AK_CTX not readable: $TPM_AK_CTX" >&2; exit 2; }
+[[ -r "$TPM_AK_NAME_FILE" ]] || { echo "TPM_AK_NAME_FILE not readable: $TPM_AK_NAME_FILE" >&2; exit 2; }
+[[ -r "$AK_CERT_DER" ]] || { echo "AK_CERT_DER not readable: $AK_CERT_DER" >&2; exit 2; }
+[[ -r "$EK_CERT_DER" ]] || { echo "EK_CERT_DER not readable: $EK_CERT_DER" >&2; exit 2; }
+[[ -r "$TPM_CREDENTIAL_ACTIVATION_JSON" ]] || { echo "TPM_CREDENTIAL_ACTIVATION_JSON not readable: $TPM_CREDENTIAL_ACTIVATION_JSON" >&2; exit 2; }
+IFS=':' read -r -a EK_CHAIN_FILES <<< "$EK_CA_CHAIN_DER"
+for cert in "${EK_CHAIN_FILES[@]}"; do
+  [[ -n "$cert" && -r "$cert" ]] || { echo "EK_CA_CHAIN_DER entry not readable: $cert" >&2; exit 2; }
+done
+
+for cmd in tpm2_quote tpm2_pcrread python3; do
   command -v "$cmd" >/dev/null || { echo "missing $cmd (install tpm2-tools/openssl)" >&2; exit 1; }
 done
 
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 
-ek_ctx="$WORKDIR/ek.ctx"
-ak_ctx="$WORKDIR/ak.ctx"
-ek_pub="$WORKDIR/ek.pub"
-ak_pub_pem="$WORKDIR/ak.pem"
-ak_cert="$WORKDIR/ak.der"
-tmp_key="$WORKDIR/tmp.key"
+ak_ctx="$TPM_AK_CTX"
+ak_name="$TPM_AK_NAME_FILE"
+ak_cert="$AK_CERT_DER"
 quote_msg="$WORKDIR/quote.msg"
 quote_sig="$WORKDIR/quote.sig"
 pcr_out="$WORKDIR/pcr.bin"
 pcrread="$WORKDIR/pcrread.txt"
 ima_log="$WORKDIR/ima.log"
-
-# Endorsement key + an ECDSA(P-256)/sha256 Attestation Key under it.
-tpm2_createek -c "$ek_ctx" -G rsa -u "$ek_pub" >/dev/null 2>&1
-tpm2_createak -C "$ek_ctx" -c "$ak_ctx" -G ecc -g sha256 -s ecdsa \
-  -u "$WORKDIR/ak.tpmpub" -n "$WORKDIR/ak.name" >/dev/null 2>&1
 
 # Quote PCR 0-10 (sha256), binding the channel binding into extraData.
 PCR_LIST="sha256:0,1,2,3,4,5,6,7,8,9,10"
@@ -62,14 +99,9 @@ tpm2_quote -c "$ak_ctx" -l "$PCR_LIST" -q "$BINDING" \
   -m "$quote_msg" -s "$quote_sig" -o "$pcr_out" -g sha256 >/dev/null 2>&1
 tpm2_pcrread "$PCR_LIST" > "$pcrread" 2>/dev/null
 
-# Build an X.509 cert whose SPKI is the AK public key. The verifier reads the
-# SPKI to check the quote signature; it does not validate this cert's own
-# signature, so a throwaway issuer key is fine. (AK->EK->manufacturer-root
-# attestation via credential activation is a documented follow-on.)
-tpm2_readpublic -c "$ak_ctx" -f pem -o "$ak_pub_pem" >/dev/null 2>&1
-openssl ecparam -genkey -name prime256v1 -out "$tmp_key" >/dev/null 2>&1
-openssl req -new -x509 -key "$tmp_key" -subj "/CN=eat-pass-ak" \
-  -force_pubkey "$ak_pub_pem" -days 1 -outform der -out "$ak_cert" >/dev/null 2>&1
+# The AK certificate is only the SPKI container used for quote verification.
+# Hardware provenance comes from EK-rooted credential activation, and the
+# activation token binds this exact AK certificate hash plus the AK name.
 
 # IMA measurement log (optional; enables the hardware-measured-binary path).
 IMA_SRC="/sys/kernel/security/ima/ascii_runtime_measurements"
@@ -84,13 +116,17 @@ PLATFORM="linux-tpm-client"
 case "$(uname -s)" in MINGW* | *NT*) PLATFORM="windows-tpm-client" ;; esac
 
 OUT="$OUT" PLATFORM="$PLATFORM" BINDING="$BINDING" BUILD_DIGEST="$BUILD_DIGEST" \
-AK_CERT="$ak_cert" QUOTE_MSG="$quote_msg" QUOTE_SIG="$quote_sig" \
+AK_CERT="$ak_cert" AK_NAME="$ak_name" EK_CERT="$EK_CERT_DER" EK_CA_CHAIN="$EK_CA_CHAIN_DER" \
+ACTIVATION_JSON="$TPM_CREDENTIAL_ACTIVATION_JSON" QUOTE_MSG="$quote_msg" QUOTE_SIG="$quote_sig" \
 PCRREAD="$pcrread" IMA_LOG="$ima_log" \
 python3 - <<'PY'
 import json, os, pathlib, re
 
 def hexfile(p):
     return pathlib.Path(p).read_bytes().hex()
+
+def read_chain(spec):
+    return [hexfile(p) for p in spec.split(":") if p]
 
 # Parse `tpm2_pcrread sha256:...` output: lines like "    10: 0xABCD...".
 pcrs = []
@@ -107,6 +143,10 @@ data = {
     "binding": os.environ["BINDING"],
     "build_digest": os.environ["BUILD_DIGEST"],
     "ak_cert": hexfile(os.environ["AK_CERT"]),
+    "ek_cert": hexfile(os.environ["EK_CERT"]),
+    "ek_ca_chain": read_chain(os.environ["EK_CA_CHAIN"]),
+    "ak_name": hexfile(os.environ["AK_NAME"]),
+    "credential_activation": json.loads(pathlib.Path(os.environ["ACTIVATION_JSON"]).read_text()),
     "quote_msg": hexfile(os.environ["QUOTE_MSG"]),
     "quote_sig": hexfile(os.environ["QUOTE_SIG"]),
     "qualifying_data": os.environ["BINDING"],

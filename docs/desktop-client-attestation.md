@@ -11,7 +11,7 @@ Non-CVM agent workloads use the same eat-pass gate as CVM and mobile:
 
 | `--gate` | OS | Evidence | Policy field |
 |----------|-----|----------|----------------|
-| `desktop-tpm` | Linux, Windows | TPM2 AK quote JSON | `allow[].measurement` = `build_id_hash` |
+| `desktop-tpm` | Linux, Windows | TPM2 AK quote JSON + EK chain + credential-activation token | `allow[].measurement` = `build_id_hash` |
 | `macos-app-attest` | macOS | App Attest assertion JSON | `allow[].app_id_hash` |
 
 Wire formats live in `unified-quote/v2/src/tee/desktop/`.
@@ -25,10 +25,31 @@ eat-pass desktop-hash-build ./target/release/eat-pass
 # put build_id_hash in policy allow[].measurement
 ```
 
-**Collect bundle (Linux, requires tpm2-tools):**
+**Trust anchors:** desktop TPM policies must pin EK roots and activation-token
+signer keys:
+
+```json
+"desktop_tpm_ek_roots": ["<sha256 DER EK root cert hex>"],
+"desktop_tpm_activation_pubkeys": ["<Ed25519 activation signer pubkey hex>"]
+```
+
+The verifier rejects bundles without an EK certificate chain ending at a pinned
+root and a fresh makecredential/activatecredential success token for the AK
+name, EK certificate, AK certificate, and eat-pass binding. A self-signed AK
+certificate alone is only enough to parse the AK public key; it is not accepted
+as TPM hardware provenance.
+
+**Collect bundle (Linux, requires tpm2-tools and provisioning material):**
 
 ```bash
-BINDING=<64-hex> BUILD_DIGEST=<64-hex> ./scripts/collect-desktop-tpm.sh -o bundle.json
+BINDING=<64-hex> BUILD_DIGEST=<64-hex> \
+  TPM_AK_CTX=ak.ctx \
+  TPM_AK_NAME_FILE=ak.name \
+  AK_CERT_DER=ak.der \
+  EK_CERT_DER=ek.der \
+  EK_CA_CHAIN_DER="ek-intermediate.der:ek-root.der" \
+  TPM_CREDENTIAL_ACTIVATION_JSON=activation.json \
+  ./scripts/collect-desktop-tpm.sh -o bundle.json
 ```
 
 **Attester:**
@@ -70,9 +91,10 @@ See [../desktop/README.md](../desktop/README.md).
 
 **Verify:**
 
-```bash
-eat-pass verify-desktop-tpm --bundle bundle.json --binding <hex>
-```
+The standalone verifier path uses the same policy trust anchors as the
+attester. Until the eat-pass dependency is re-pinned to the hardened
+unified-quote commit, this command remains tied to the currently pinned remote
+verifier.
 
 Windows hosts produce the same JSON with `"platform": "windows-tpm-client"` (PowerShell/tpm2-tss collection is host-specific; verifier is shared).
 

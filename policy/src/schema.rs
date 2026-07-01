@@ -121,6 +121,15 @@ pub struct VerificationPolicy {
     /// (hex sha256 over PCR 0-9). Empty accepts any boot state.
     #[serde(default)]
     pub boot_aggregates: Vec<String>,
+    /// Desktop-TPM only: pinned SHA-256 fingerprints of DER-encoded TPM
+    /// manufacturer / privacy-CA EK roots. Required for desktop TPM policies.
+    #[serde(default)]
+    pub desktop_tpm_ek_roots: Vec<String>,
+    /// Desktop-TPM only: Ed25519 public keys allowed to sign online
+    /// makecredential/activatecredential success tokens. Required for desktop
+    /// TPM policies.
+    #[serde(default)]
+    pub desktop_tpm_activation_pubkeys: Vec<String>,
     /// Operator trust-boundary notes (surfaced in logs and appraisal results).
     #[serde(default)]
     pub notes: Option<String>,
@@ -192,17 +201,45 @@ impl VerificationPolicy {
                 }
             }
         }
-        if (self.require_ima || !self.boot_aggregates.is_empty())
-            && self.evidence_profile != EvidenceProfile::DesktopTpmClient
-        {
+        let has_desktop_tpm_policy = self.require_ima
+            || !self.boot_aggregates.is_empty()
+            || !self.desktop_tpm_ek_roots.is_empty()
+            || !self.desktop_tpm_activation_pubkeys.is_empty();
+        if has_desktop_tpm_policy && self.evidence_profile != EvidenceProfile::DesktopTpmClient {
             return Err(PolicyError::Invalid(
-                "require_ima/boot_aggregates are only valid for the desktop-tpm profile".into(),
+                "desktop TPM trust-root fields are only valid for the desktop-tpm profile".into(),
             ));
+        }
+        if self.evidence_profile == EvidenceProfile::DesktopTpmClient {
+            if self.desktop_tpm_ek_roots.is_empty() {
+                return Err(PolicyError::Invalid(
+                    "desktop-tpm profile requires desktop_tpm_ek_roots".into(),
+                ));
+            }
+            if self.desktop_tpm_activation_pubkeys.is_empty() {
+                return Err(PolicyError::Invalid(
+                    "desktop-tpm profile requires desktop_tpm_activation_pubkeys".into(),
+                ));
+            }
         }
         for (i, ba) in self.boot_aggregates.iter().enumerate() {
             if hex::decode(ba.trim()).map(|v| v.len()).unwrap_or(0) != 32 {
                 return Err(PolicyError::Invalid(format!(
                     "boot_aggregates[{i}] must be 32-byte hex (sha256 over PCR 0-9)"
+                )));
+            }
+        }
+        for (i, fp) in self.desktop_tpm_ek_roots.iter().enumerate() {
+            if hex::decode(fp.trim()).map(|v| v.len()).unwrap_or(0) != 32 {
+                return Err(PolicyError::Invalid(format!(
+                    "desktop_tpm_ek_roots[{i}] must be 32-byte hex (sha256 of DER root cert)"
+                )));
+            }
+        }
+        for (i, pk) in self.desktop_tpm_activation_pubkeys.iter().enumerate() {
+            if hex::decode(pk.trim()).map(|v| v.len()).unwrap_or(0) != 32 {
+                return Err(PolicyError::Invalid(format!(
+                    "desktop_tpm_activation_pubkeys[{i}] must be 32-byte hex Ed25519 public key"
                 )));
             }
         }
@@ -212,6 +249,24 @@ impl VerificationPolicy {
     /// Parsed boot-aggregate allowlist (32-byte fingerprints).
     pub fn boot_aggregates_bytes(&self) -> Vec<[u8; 32]> {
         self.boot_aggregates
+            .iter()
+            .filter_map(|s| {
+                hex::decode(s.trim())
+                    .ok()
+                    .and_then(|v| <[u8; 32]>::try_from(v.as_slice()).ok())
+            })
+            .collect()
+    }
+
+    pub fn desktop_tpm_ek_roots_bytes(&self) -> Vec<String> {
+        self.desktop_tpm_ek_roots
+            .iter()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .collect()
+    }
+
+    pub fn desktop_tpm_activation_pubkeys_bytes(&self) -> Vec<[u8; 32]> {
+        self.desktop_tpm_activation_pubkeys
             .iter()
             .filter_map(|s| {
                 hex::decode(s.trim())
@@ -252,5 +307,56 @@ mod tests {
         let p = VerificationPolicy::from_json_bytes(j.as_bytes()).unwrap();
         assert_eq!(p.allow.len(), 1);
         assert_eq!(p.measurement_class().len(), 1);
+    }
+
+    #[test]
+    fn desktop_tpm_policy_requires_trust_roots() {
+        let j = r#"{
+          "version": 1,
+          "id": "desktop",
+          "evidence_profile": "desktop-tpm-client",
+          "class": { "name": "desktop", "version": 1 },
+          "allow": [{ "measurement": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20" }]
+        }"#;
+        let err = VerificationPolicy::from_json_bytes(j.as_bytes()).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("desktop-tpm profile requires desktop_tpm_ek_roots"));
+    }
+
+    #[test]
+    fn desktop_tpm_trust_roots_are_desktop_only() {
+        let j = r#"{
+          "version": 1,
+          "id": "azure",
+          "evidence_profile": "azure-snp-bundle",
+          "class": { "name": "azure", "version": 1 },
+          "allow": [{ "measurement": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20" }],
+          "desktop_tpm_ek_roots": ["0000000000000000000000000000000000000000000000000000000000000000"],
+          "desktop_tpm_activation_pubkeys": ["1111111111111111111111111111111111111111111111111111111111111111"]
+        }"#;
+        let err = VerificationPolicy::from_json_bytes(j.as_bytes()).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("desktop TPM trust-root fields are only valid"));
+    }
+
+    #[test]
+    fn parse_desktop_tpm_policy_with_trust_roots() {
+        let j = r#"{
+          "version": 1,
+          "id": "desktop",
+          "evidence_profile": "desktop-tpm-client",
+          "class": { "name": "desktop", "version": 1 },
+          "allow": [{ "measurement": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20" }],
+          "desktop_tpm_ek_roots": ["AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"],
+          "desktop_tpm_activation_pubkeys": ["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]
+        }"#;
+        let p = VerificationPolicy::from_json_bytes(j.as_bytes()).unwrap();
+        assert_eq!(
+            p.desktop_tpm_ek_roots_bytes(),
+            vec!["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
+        );
+        assert_eq!(p.desktop_tpm_activation_pubkeys_bytes(), vec![[0xbb; 32]]);
     }
 }

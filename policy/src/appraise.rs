@@ -171,6 +171,8 @@ mod tests {
             }],
             require_ima: false,
             boot_aggregates: Vec::new(),
+            desktop_tpm_ek_roots: Vec::new(),
+            desktop_tpm_activation_pubkeys: Vec::new(),
             notes: None,
         }
     }

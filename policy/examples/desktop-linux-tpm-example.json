@@ -5,9 +5,15 @@
   "class": { "name": "desktop-agents", "version": 1 },
   "allow": [
     {
-      "measurement": "REPLACE_WITH_BUILD_ID_HASH_HEX",
+      "measurement": "2222222222222222222222222222222222222222222222222222222222222222",
       "registry_status": "recommended"
     }
   ],
-  "notes": "measurement = desktop_build_id_hash(sha256(agent binary)). Collect bundle: scripts/collect-desktop-tpm.sh"
+  "desktop_tpm_ek_roots": [
+    "0000000000000000000000000000000000000000000000000000000000000000"
+  ],
+  "desktop_tpm_activation_pubkeys": [
+    "1111111111111111111111111111111111111111111111111111111111111111"
+  ],
+  "notes": "Example values are dummy placeholders. Replace measurement with desktop_build_id_hash(sha256(agent binary)), desktop_tpm_ek_roots with TPM manufacturer/privacy-CA root DER sha256 pins, and desktop_tpm_activation_pubkeys with the verifier activation-token signer Ed25519 public key."
 }
