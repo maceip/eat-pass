@@ -39,6 +39,9 @@ name, EK certificate, AK certificate, and eat-pass binding. A self-signed AK
 certificate alone is only enough to parse the AK public key; it is not accepted
 as TPM hardware provenance.
 
+An EK root is a TPM manufacturer or privacy-CA root, not an operating-system
+root. The same policy fields are used for Linux and Windows TPM2 hosts.
+
 **Collect bundle (Linux, requires tpm2-tools and provisioning material):**
 
 ```bash
@@ -92,11 +95,19 @@ See [../desktop/README.md](../desktop/README.md).
 **Verify:**
 
 The standalone verifier path uses the same policy trust anchors as the
-attester. Until the eat-pass dependency is re-pinned to the hardened
-unified-quote commit, this command remains tied to the currently pinned remote
-verifier.
+attester:
 
-Windows hosts produce the same JSON with `"platform": "windows-tpm-client"` (PowerShell/tpm2-tss collection is host-specific; verifier is shared).
+```bash
+eat-pass verify-desktop-tpm \
+  --bundle bundle.json \
+  --binding <hex> \
+  --policy policy/examples/desktop-linux-tpm-example.json
+```
+
+Windows hosts produce the same JSON with `"platform": "windows-tpm-client"`.
+Use semicolon-separated paths for `EK_CA_CHAIN_DER`, for example
+`ek-intermediate.der;ek-root.der`, because Windows drive-letter paths contain
+colons. PowerShell/tpm2-tss collection is host-specific; verifier is shared.
 
 ## macOS (App Attest)
 

@@ -138,6 +138,8 @@ enum Cmd {
         bundle: PathBuf,
         #[arg(long)]
         binding: String,
+        #[arg(long, value_name = "FILE")]
+        policy: PathBuf,
     },
 
     VerifyMacOsAppAttest {
@@ -416,12 +418,32 @@ async fn main() -> anyhow::Result<()> {
             }
         }
 
-        Cmd::VerifyDesktopTpm { bundle, binding } => {
+        Cmd::VerifyDesktopTpm {
+            bundle,
+            binding,
+            policy,
+        } => {
             use eat_pass_core::gate::AttestationVerifier;
+            use eat_pass_policy::{EvidenceProfile, PolicyGated, VerificationPolicy};
             let json = std::fs::read(&bundle)
                 .map_err(|e| anyhow::anyhow!("read bundle {}: {e}", bundle.display()))?;
             let binding = parse_hex32(&binding, "binding")?;
-            match eat_pass_gate::DesktopTpmVerifier::new().verify(&json, &binding) {
+            let policy = VerificationPolicy::from_json_file(&policy)
+                .map_err(|e| anyhow::anyhow!("load policy {}: {e}", policy.display()))?;
+            if policy.evidence_profile != EvidenceProfile::DesktopTpmClient {
+                anyhow::bail!(
+                    "policy evidence_profile must be desktop-tpm-client, got {:?}",
+                    policy.evidence_profile
+                );
+            }
+            let verifier = eat_pass_gate::DesktopTpmVerifier::with_policy(
+                policy.require_ima,
+                policy.boot_aggregates_bytes(),
+                policy.desktop_tpm_ek_roots_bytes(),
+                policy.desktop_tpm_activation_pubkeys_bytes(),
+            );
+            let gated = PolicyGated::new(verifier, policy);
+            match gated.verify(&json, &binding) {
                 Ok(m) => {
                     println!("VALID");
                     println!("platform   {}", m.platform);

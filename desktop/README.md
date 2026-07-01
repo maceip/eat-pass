@@ -5,8 +5,8 @@ Coupled mint: **attest → policy (FAEST) → blind mint (PoMFRIT) → spend**.
 | Platform | SDK | Surface | Attester gate |
 |----------|-----|---------|---------------|
 | **Linux (CVM)** | `eatpass_desktop.linux.tee` | TEE / confidential VM | `azure`, `uq` |
-| **Linux (agent)** | `eatpass_desktop.linux.workload` | Host TPM, no TEE | `desktop-tpm` |
-| **Windows** | `eatpass_desktop` / `sdk-windows` | TPM2 | `desktop-tpm` |
+| **Linux (agent)** | `eatpass_desktop.linux.workload` | Host TPM2 EK + activation, no TEE | `desktop-tpm` |
+| **Windows** | `eatpass_desktop` / `sdk-windows` | Host TPM2 EK + activation | `desktop-tpm` |
 | **macOS** | `desktop/sdk-macos` | App Attest | `macos-app-attest` |
 | **iOS** | `mobile/sdk-ios` | App Attest | `ios-app-attest` |
 | **Android** | `mobile/sdk-android` | Key Attestation | `android-key` |
@@ -59,6 +59,8 @@ print(client.mint_authorization_header().authorization_header)
 Attester: `eat-pass attester --gate desktop-tpm --policy policy/examples/desktop-linux-tpm-example.json`
 
 Policy digest: `eat-pass desktop-hash-build ./your-agent`
+TPM policies also need `desktop_tpm_ek_roots` and
+`desktop_tpm_activation_pubkeys`; see `docs/platform-support-matrix.md`.
 
 See [../docs/linux-sdk.md](../docs/linux-sdk.md).
 

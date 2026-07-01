@@ -59,7 +59,7 @@ makecredential/activatecredential token signed by one of the activation keys.
 `require_ima` and `boot_aggregates` remain optional hardening knobs for proving
 the measured desktop binary and known-good boot state.
 
-Per-platform table: [`docs/platform-surface.md`](platform-surface.md) · interactive: [`platforms.html`](platforms.html)
+Per-platform table: [`docs/platform-surface.md`](platform-surface.md) · implementation status: [`docs/platform-support-matrix.md`](platform-support-matrix.md) · interactive: [`platforms.html`](platforms.html)
 
 ## CLI (human + agent)
 

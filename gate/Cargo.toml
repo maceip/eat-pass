@@ -16,6 +16,6 @@ eat-pass-core = { path = "../core", default-features = false }
 # The portable unified-quote verifier. sev-snp covers the live Azure CVM node;
 # tdx is cheap to include (no extra heavy deps) and covers Intel TDX / GCP once
 # unblocked. nitro is intentionally left off here to keep the gate lean.
-unified-quote = { git = "https://github.com/maceip/unified-quote", rev = "64b58c15b1f06b6c47008fa10a4e8b633085d764", default-features = false, features = ["mobile", "desktop", "sev-snp", "tdx"] }
+unified-quote = { git = "https://github.com/maceip/unified-quote", rev = "fb4bb069528b1a5d586c10332693334e48e76a1c", default-features = false, features = ["mobile", "desktop", "sev-snp", "tdx"] }
 hex = { workspace = true }
 serde_json = { workspace = true }

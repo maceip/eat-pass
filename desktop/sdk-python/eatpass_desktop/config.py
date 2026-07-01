@@ -41,7 +41,8 @@ class EatPassLinuxTeeConfig(EatPassBaseConfig):
 class EatPassLinuxWorkloadConfig(EatPassBaseConfig):
     """Linux agents **without** a confidential VM — bare metal, VM, laptop, k8s pod.
 
-    Attester gate: ``desktop-tpm``. Evidence: host TPM2 AK quote + build digest.
+    Attester gate: ``desktop-tpm``. Evidence: host TPM2 EK-rooted AK quote,
+    credential activation token, and build digest.
     Policy field: ``allow[].measurement`` = ``desktop_build_id_hash(sha256(agent))``.
     """
 

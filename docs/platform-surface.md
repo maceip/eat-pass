@@ -11,8 +11,8 @@ There are no separate “gauges” — only **gates** (crypto verifier backend) 
 | Surface | Agent | Attester `--gate` | `evidence_profile` | Policy field | SDK | Trust |
 |---------|-------|-------------------|----------------------|--------------|-----|-------|
 | **Confidential cloud** | CVM agent | `azure` or `uq` | `azure-snp-bundle` / `uq-eat` | `measurement` (launch digest) | `EatPassLinuxTeeClient` | AMD / Intel silicon |
-| **Linux workload** | Host / k8s agent | `desktop-tpm` | `desktop-tpm-client` | `measurement` (build id hash) | `EatPassLinuxWorkloadClient` | Host TPM2 |
-| **Windows desktop** | Enterprise agent | `desktop-tpm` | `desktop-tpm-client` | `measurement` | `EatPass.Desktop` (C#) | TPM2 |
+| **Linux workload** | Host / k8s agent | `desktop-tpm` | `desktop-tpm-client` | `measurement` (build id hash) + TPM anchors | `EatPassLinuxWorkloadClient` | Host TPM2 EK root + activation |
+| **Windows desktop** | Enterprise agent | `desktop-tpm` | `desktop-tpm-client` | `measurement` + TPM anchors | `EatPass.Desktop` (C#) | Host TPM2 EK root + activation |
 | **macOS desktop** | Signed app agent | `macos-app-attest` | `macos-app-attest` | `app_id_hash` | `EatPassDesktop` (Swift) | Apple App Attest |
 | **iOS mobile** | App agent | `ios-app-attest` | `ios-app-attest` | `app_id_hash` | `EatPassMobile` (Swift) | Apple App Attest |
 | **Android mobile** | App agent | `android-key` | `android-key-attestation` | `app_id_hash` | `EatPassMobile` (Kotlin) | KeyMint chain |
@@ -76,4 +76,5 @@ SMTP credentials never leave the tool-gate host. See [`demos/tool-gate/`](../dem
 | Android | `policy/examples/mobile-android-example.json` |
 | iOS | `policy/examples/mobile-ios-example.json` |
 
-Full spec: [`docs/verification-policy.md`](../docs/verification-policy.md)
+Full spec: [`docs/verification-policy.md`](../docs/verification-policy.md).
+Implementation status: [`docs/platform-support-matrix.md`](platform-support-matrix.md).

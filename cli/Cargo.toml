@@ -19,7 +19,7 @@ path = "src/main.rs"
 eat-pass-core = { path = "../core" }
 eat-pass-gate = { path = "../gate" }
 eat-pass-policy = { path = "../policy" }
-unified-quote = { git = "https://github.com/maceip/unified-quote", rev = "64b58c15b1f06b6c47008fa10a4e8b633085d764", default-features = false, features = ["desktop"] }
+unified-quote = { git = "https://github.com/maceip/unified-quote", rev = "fb4bb069528b1a5d586c10332693334e48e76a1c", default-features = false, features = ["desktop"] }
 sha2 = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }

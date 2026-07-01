@@ -10,7 +10,11 @@ public sealed class EatPassConfig
     public TimeSpan Timeout { get; init; } = TimeSpan.FromSeconds(30);
     /// <summary>sha256(agent binary) hex — required for TPM mint.</summary>
     public required string BuildDigestHex { get; init; }
-    /// <summary>Optional override to collect-desktop-tpm-windows.ps1</summary>
+    /// <summary>
+    /// Optional override to collect-desktop-tpm-windows.ps1. The script also
+    /// requires TPM_AK_CTX, TPM_AK_NAME_FILE, AK_CERT_DER, EK_CERT_DER,
+    /// EK_CA_CHAIN_DER, and TPM_CREDENTIAL_ACTIVATION_JSON in the environment.
+    /// </summary>
     public string? CollectScriptPath { get; init; }
 }
 

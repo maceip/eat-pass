@@ -3498,7 +3498,7 @@ dependencies = [
 [[package]]
 name = "unified-quote"
 version = "0.1.0"
-source = "git+https://github.com/maceip/unified-quote?rev=64b58c15b1f06b6c47008fa10a4e8b633085d764#64b58c15b1f06b6c47008fa10a4e8b633085d764"
+source = "git+https://github.com/maceip/unified-quote?rev=fb4bb069528b1a5d586c10332693334e48e76a1c#fb4bb069528b1a5d586c10332693334e48e76a1c"
 dependencies = [
  "anyhow",
  "base64",

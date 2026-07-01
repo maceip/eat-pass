@@ -263,14 +263,13 @@ impl AttestationVerifier for AzureTlsVerifier {
 
 /// Verifies a Linux or Windows TPM2 client bundle (desktop agent, no CVM).
 ///
-/// With no policy it authenticates the AK quote + channel binding only (the
-/// agent binary identity is the self-reported `build_digest`). Configured via
-/// [`DesktopTpmVerifier::with_policy`], it additionally requires a
-/// hardware-measured IMA log and/or a known-good boot-aggregate.
+/// Production use must construct this through [`DesktopTpmVerifier::with_policy`]
+/// so EK roots and activation-token signer keys come from operator policy.
 #[derive(Clone, Default)]
 pub struct DesktopTpmVerifier {
     require_ima: bool,
     boot_aggregates: Vec<[u8; 32]>,
+    tpm_options: unified_quote::tee::desktop::tpm::TpmVerifierOptions,
 }
 
 impl DesktopTpmVerifier {
@@ -278,14 +277,27 @@ impl DesktopTpmVerifier {
         Self::default()
     }
 
-    /// Configure the IMA / boot-aggregate posture from operator policy.
+    /// Configure TPM provenance and IMA / boot-aggregate posture from operator policy.
+    ///
+    /// `ek_root_sha256` pins TPM manufacturer or privacy-CA roots, and
+    /// `activation_pubkeys` pins online activation-token signer keys.
     /// `require_ima` rejects channel-bound-only bundles; a non-empty
     /// `boot_aggregates` allowlist requires the quoted boot state (PCR 0-9) to
     /// match a known-good fingerprint.
-    pub fn with_policy(require_ima: bool, boot_aggregates: Vec<[u8; 32]>) -> Self {
+    pub fn with_policy(
+        require_ima: bool,
+        boot_aggregates: Vec<[u8; 32]>,
+        ek_root_sha256: Vec<String>,
+        activation_pubkeys: Vec<[u8; 32]>,
+    ) -> Self {
         Self {
             require_ima,
             boot_aggregates,
+            tpm_options: unified_quote::tee::desktop::tpm::TpmVerifierOptions {
+                ek_root_sha256,
+                activation_pubkeys,
+                now: None,
+            },
         }
     }
 }
@@ -294,8 +306,12 @@ impl AttestationVerifier for DesktopTpmVerifier {
     fn verify(&self, eat: &[u8], expected_binding: &[u8; 32]) -> Result<Measurement, GateError> {
         let bundle: unified_quote::tee::desktop::tpm::TpmClientBundle = serde_json::from_slice(eat)
             .map_err(|e| GateError::AttestationInvalid(format!("desktop tpm bundle: {e}")))?;
-        let verdict = unified_quote::tee::desktop::tpm::verify_bundle(&bundle, expected_binding)
-            .map_err(|e| GateError::AttestationInvalid(format!("desktop tpm: {e}")))?;
+        let verdict = unified_quote::tee::desktop::tpm::verify_bundle_with_options(
+            &bundle,
+            expected_binding,
+            &self.tpm_options,
+        )
+        .map_err(|e| GateError::AttestationInvalid(format!("desktop tpm: {e}")))?;
         if verdict.verdict != "verified" {
             return Err(GateError::AttestationInvalid(format!(
                 "desktop tpm verdict: {}",
@@ -453,6 +469,26 @@ mod tests {
         let v = DesktopTpmVerifier::new();
         let err = v.verify(b"not json", &[0u8; 32]).unwrap_err();
         assert!(matches!(err, GateError::AttestationInvalid(_)));
+    }
+
+    #[test]
+    fn desktop_tpm_verifier_carries_policy_trust_anchors() {
+        let ek_roots =
+            vec!["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string()];
+        let activation_pubkeys = vec![[0x42; 32]];
+        let boot_aggregates = vec![[0x11; 32]];
+
+        let v = DesktopTpmVerifier::with_policy(
+            true,
+            boot_aggregates.clone(),
+            ek_roots.clone(),
+            activation_pubkeys.clone(),
+        );
+
+        assert!(v.require_ima);
+        assert_eq!(v.boot_aggregates, boot_aggregates);
+        assert_eq!(v.tpm_options.ek_root_sha256, ek_roots);
+        assert_eq!(v.tpm_options.activation_pubkeys, activation_pubkeys);
     }
 
     #[test]
